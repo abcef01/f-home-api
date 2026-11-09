@@ -1,56 +1,105 @@
-/**
+﻿/**
  * Bunny's Home — 后端
- * 第四章：健康检查骨架
- * 第五章：接上 Supabase（建表见 supabase/schema.sql）
+ * 第四章：健康检查
+ * 第五章：接 Supabase
+ * 第六章：真正能对话（拼上下文 / 存消息 / 记忆压缩）
  */
 import express from 'express';
 import cors from 'cors';
 import { supabase, dbReady } from './db.js';
+import { callModel, listModels, providerConfig } from './llm.js';
+import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
 
-/* ---------- 健康检查 ---------- */
-app.get('/health', (req, res) => {
+/* 人设。第七章前端调提示词时，这里可以从 app_settings 里读 */
+const SYSTEM_PROMPT = `你是 Elliott。你和对方住在一个叫 Bunny's Home 的地方。
+说话简短、具体、有生活感，不要用“作为一个 AI”这类句子。
+你会记得你们之间发生过的事，提到的时候要自然，不要像在念清单。`;
+
+/* ============================================================
+   基础
+   ============================================================ */
+app.get('/health', async (req, res) => {
   res.json({
     ok: true,
     service: "bunny's home api",
     uptime: Math.round(process.uptime()),
     db: dbReady ? 'configured' : 'missing-env',
+    chatModel: (await getModelConf()).model,
     time: new Date().toISOString()
   });
 });
 
 app.get('/', (req, res) => {
   res.type('text/plain').send(
-    "Bunny's Home API 正在运行。\n健康检查：/health\n数据库自检：/api/db-check\n"
+    "Bunny's Home API 正在运行。\n" +
+      '/health          健康检查\n' +
+      '/api/db-check    数据库自检\n' +
+      '/api/chat        POST 发一条消息\n'
   );
 });
 
-/* ---------- 数据库自检：能不能真的读到表 ---------- */
 app.get('/api/db-check', async (req, res) => {
-  if (!dbReady) {
-    return res.status(503).json({
-      ok: false,
-      error: '缺少 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY'
-    });
-  }
+  if (!dbReady) return res.status(503).json({ ok: false, error: '缺少 SUPABASE 环境变量' });
   const { data, error, count } = await supabase
     .from('conversations')
     .select('id, title, created_at', { count: 'exact' })
     .order('created_at', { ascending: false })
     .limit(5);
-
-  if (error) {
-    return res.status(500).json({ ok: false, error: error.message });
-  }
+  if (error) return res.status(500).json({ ok: false, error: error.message });
   res.json({ ok: true, count, conversations: data });
 });
 
-/* ---------- 会话列表 ---------- */
+/* ============================================================
+   模型选择（第六章）：存在 app_settings 里，前端随时能改
+   ============================================================ */
+async function getModelConf() {
+  const fallback = {
+    channel: 'chat',
+    model: providerConfig('chat').model
+  };
+  if (!dbReady) return fallback;
+  const { data } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', 'chat_model')
+    .maybeSingle();
+  if (data?.value?.model) return { channel: data.value.channel || 'chat', model: data.value.model };
+  return fallback;
+}
+
+app.get('/api/models', async (req, res) => {
+  const channel = req.query.channel === 'alt' ? 'alt' : 'chat';
+  try {
+    const models = await listModels(channel);
+    res.json({ channel, models });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/settings/model', async (req, res) => {
+  res.json(await getModelConf());
+});
+
+app.post('/api/settings/model', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { channel = 'chat', model } = req.body || {};
+  if (!model) return res.status(400).json({ error: 'model 不能为空' });
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'chat_model', value: { channel, model }, updated_at: new Date().toISOString() });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, channel, model });
+});
+/* ============================================================
+   会话
+   ============================================================ */
 app.get('/api/conversations', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
   const { data, error } = await supabase
@@ -61,7 +110,17 @@ app.get('/api/conversations', async (req, res) => {
   res.json({ conversations: data });
 });
 
-/* ---------- 某个会话的消息 ---------- */
+app.post('/api/conversations', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { data, error } = await supabase
+    .from('conversations')
+    .insert({ title: req.body?.title || '新的对话' })
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ conversation: data });
+});
+
 app.get('/api/conversations/:id/messages', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
   const { data, error } = await supabase
@@ -73,20 +132,135 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
   res.json({ messages: data });
 });
 
-/* ---------- 占位：第六章接模型 ---------- */
+/* ============================================================
+   核心：发一条消息，拿回复
+   ------------------------------------------------------------
+   请求：POST /api/chat
+   { conversationId?: string, message: string }
+   ============================================================ */
 app.post('/api/chat', async (req, res) => {
-  const { messages } = req.body || {};
-  if (!Array.isArray(messages)) {
-    return res.status(400).json({ error: 'messages 必须是数组' });
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+
+  const { conversationId, message } = req.body || {};
+  if (!message || typeof message !== 'string') {
+    return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
-  res.json({
-    role: 'assistant',
-    content: '（骨架阶段）我收到你的消息了，第六章接上模型就会真的回你。',
-    model: 'stub',
-    tokens: 0
-  });
+
+  try {
+    /* 1. 没有会话就新建一个，标题用第一句话的前 16 个字 */
+    let convId = conversationId;
+    if (!convId) {
+      const { data, error } = await supabase
+        .from('conversations')
+        .insert({ title: message.slice(0, 16) })
+        .select()
+        .single();
+      if (error) throw new Error('建会话失败：' + error.message);
+      convId = data.id;
+    }
+
+    /* 2. 读历史消息 + 记忆摘要 */
+    const [{ data: history, error: histErr }, { data: memories, error: memErr }] = await Promise.all([
+      supabase
+        .from('messages')
+        .select('role, content, created_at')
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: true }),
+      supabase
+        .from('memories')
+        .select('summary, created_at')
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: true })
+    ]);
+    if (histErr) throw new Error('读历史失败：' + histErr.message);
+    if (memErr) throw new Error('读记忆失败：' + memErr.message);
+
+    /* 3. 先把用户这条存下来（即使模型失败，消息也不丢） */
+    const { data: savedUser, error: saveUserErr } = await supabase
+      .from('messages')
+      .insert({
+        conversation_id: convId,
+        role: 'user',
+        content: message,
+        tokens: estimateTokens(message)
+      })
+      .select()
+      .single();
+    if (saveUserErr) throw new Error('存消息失败：' + saveUserErr.message);
+
+    /* 4. 拼上下文：记忆摘要 + 最近若干条 */
+    const memoryBlock = (memories || []).map((m) => `· ${m.summary}`).join('\n');
+    const recent = [...(history || []), { role: 'user', content: message }];
+    const trimmed = recent.slice(-20);
+
+    const system = memoryBlock
+      ? `${SYSTEM_PROMPT}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
+      : SYSTEM_PROMPT;
+
+    /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
+    const conf = req.body.model
+      ? { channel: req.body.channel || 'chat', model: req.body.model }
+      : await getModelConf();
+    const reply = await callModel({
+      target: conf.channel === 'alt' ? 'alt' : 'chat',
+      model: conf.model,
+      system,
+      messages: trimmed.map((m) => ({ role: m.role, content: m.content }))
+    });
+
+    /* 6. 存回复 */
+    const { data: savedReply, error: saveReplyErr } = await supabase
+      .from('messages')
+      .insert({
+        conversation_id: convId,
+        role: 'assistant',
+        content: reply.content,
+        model: reply.model,
+        tokens: reply.tokens,
+        meta: reply.meta || {}
+      })
+      .select()
+      .single();
+    if (saveReplyErr) throw new Error('存回复失败：' + saveReplyErr.message);
+
+    await supabase
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', convId);
+
+    /* 7. 需要的话压缩记忆（失败不影响这次回复） */
+    let compressed = null;
+    const all = [...(history || []), { role: 'user', content: message }, { role: 'assistant', content: reply.content }];
+    if (shouldCompress(all)) {
+      try {
+        const older = all.slice(0, all.length - KEEP_RECENT);
+        const result = await summarize(older);
+        if (result.summary) {
+          await supabase.from('memories').insert({
+            conversation_id: convId,
+            summary: result.summary,
+            tokens: result.tokens,
+            covers_up_to: older[older.length - 1]?.created_at || new Date().toISOString()
+          });
+          compressed = result.summary;
+        }
+      } catch (e) {
+        console.warn('[memory] 压缩失败：', e.message);
+      }
+    }
+
+    res.json({
+      conversationId: convId,
+      userMessage: savedUser,
+      reply: savedReply,
+      compressed
+    });
+  } catch (e) {
+    console.error('[chat]', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => {
-  console.log(`Bunny's Home API listening on http://localhost:${PORT}`);
+  console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
 });
