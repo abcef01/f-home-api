@@ -118,3 +118,85 @@ export async function listModels(target = 'chat') {
   const json = JSON.parse(text);
   return (json.data || []).map((m) => m.id).sort();
 }
+
+/* ============================================================
+   流式输出：逐块吐出 token
+   ------------------------------------------------------------
+   用法：
+     for await (const ev of streamChat({ system, messages })) {
+       if (ev.type === 'delta') ...   // 一小段文字
+       if (ev.type === 'usage') ...   // 最后的 token 统计
+     }
+   ============================================================ */
+export async function* streamChat({
+  messages,
+  system,
+  target = 'chat',
+  model: modelOverride = '',
+  temperature = 0.8,
+  maxTokens = 1200
+}) {
+  const conf = providerConfig(target);
+  const { base, key } = conf;
+  const model = modelOverride || conf.model;
+  if (!base) throw new Error(`缺少 ${target.toUpperCase()}_BASE_URL`);
+  if (!key) throw new Error(`缺少 ${target.toUpperCase()}_API_KEY`);
+  if (!model) throw new Error(`缺少 ${target.toUpperCase()}_MODEL`);
+
+  const res = await fetch(endpoint(base) + '/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`
+    },
+    body: JSON.stringify({
+      model,
+      temperature,
+      max_tokens: maxTokens,
+      stream: true,
+      stream_options: { include_usage: true },
+      messages: system ? [{ role: 'system', content: system }, ...messages] : messages
+    })
+  });
+
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`模型返回 ${res.status}：${t.slice(0, 300)}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+
+    const lines = buf.split('\n');
+    buf = lines.pop() || '';
+
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') return;
+      let json;
+      try {
+        json = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      const delta = json.choices?.[0]?.delta;
+      if (delta?.reasoning_content) {
+        yield { type: 'reasoning', text: delta.reasoning_content };
+      }
+      if (delta?.content) {
+        yield { type: 'delta', text: delta.content };
+      }
+      if (json.usage) {
+        yield { type: 'usage', usage: json.usage, model: json.model || model };
+      }
+    }
+  }
+}
