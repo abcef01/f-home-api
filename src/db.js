@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Supabase 连接
  * ------------------------------------------------------------
  * 只用 service_role key，绝不暴露给前端。
@@ -6,19 +6,29 @@
  */
 import fs from 'node:fs';
 
-/* 本地开发时自动读 .env；线上（Render）直接用平台注入的环境变量 */
-try {
-  const file = new URL('../.env', import.meta.url);
-  const text = fs.readFileSync(file, 'utf8');
-  for (const line of text.split('\n')) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (!m) continue;
-    const key = m[1];
-    const value = m[2].replace(/^["']|["']$/g, '');
-    if (value && !process.env[key]) process.env[key] = value;
+/* 加载配置的来源，按顺序：
+   1. 本地 bunny-home-api/.env
+   2. Render 的 Secret File（挂载在 /etc/secrets/.env）
+   3. 平台注入的环境变量（优先级最高，不会被覆盖）
+*/
+const envFiles = [
+  new URL('../.env', import.meta.url),
+  new URL('file:///etc/secrets/.env')
+];
+
+for (const file of envFiles) {
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    for (const line of text.split('\n')) {
+      const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (!m) continue;
+      const key = m[1];
+      const value = m[2].replace(/^["']|["']$/g, '');
+      if (value && !process.env[key]) process.env[key] = value;
+    }
+  } catch {
+    /* 这个来源不存在，跳过 */
   }
-} catch {
-  /* 没有 .env 或读不到，忽略 —— 线上就是这种情况 */
 }
 
 import { createClient } from '@supabase/supabase-js';
