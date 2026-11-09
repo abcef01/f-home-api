@@ -1,0 +1,19 @@
+{
+  "name": "bunny-home-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bunny's Home backend — health check + chat proxy skeleton",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
