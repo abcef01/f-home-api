@@ -7,7 +7,7 @@
 import express from 'express';
 import cors from 'cors';
 import { supabase, dbReady } from './db.js';
-import { callModel, listModels, providerConfig } from './llm.js';
+import { callModel, listModels, providerConfig, channelsInfo, CHANNELS } from './llm.js';
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
 
 const app = express();
@@ -73,13 +73,18 @@ async function getModelConf() {
   return fallback;
 }
 
+/* 有哪些通道、配好了没（第七章做选择器用） */
+app.get('/api/channels', (req, res) => {
+  res.json({ channels: channelsInfo() });
+});
+
 app.get('/api/models', async (req, res) => {
-  const channel = req.query.channel === 'alt' ? 'alt' : 'chat';
+  const channel = CHANNELS.includes(req.query.channel) ? req.query.channel : 'chat';
   try {
     const models = await listModels(channel);
     res.json({ channel, models });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message, channel });
   }
 });
 
@@ -90,6 +95,9 @@ app.get('/api/settings/model', async (req, res) => {
 app.post('/api/settings/model', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
   const { channel = 'chat', model } = req.body || {};
+  if (!CHANNELS.includes(channel)) {
+    return res.status(400).json({ error: 'channel 只能是 ' + CHANNELS.join(' / ') });
+  }
   if (!model) return res.status(400).json({ error: 'model 不能为空' });
   const { error } = await supabase
     .from('app_settings')
@@ -202,7 +210,7 @@ app.post('/api/chat', async (req, res) => {
       ? { channel: req.body.channel || 'chat', model: req.body.model }
       : await getModelConf();
     const reply = await callModel({
-      target: conf.channel === 'alt' ? 'alt' : 'chat',
+      target: CHANNELS.includes(conf.channel) ? conf.channel : 'chat',
       model: conf.model,
       system,
       messages: trimmed.map((m) => ({ role: m.role, content: m.content }))

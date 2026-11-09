@@ -8,6 +8,17 @@
  *   ALT_*     备用通道（hapi），留空就不用
  */
 
+export const CHANNELS = ['chat', 'alt', 'hapi', 'hapi2', 'hapi3'];
+
+/* 给界面看的名字 */
+export const CHANNEL_LABELS = {
+  chat: 'DeepSeek 官方',
+  alt: 'x-llm 中转',
+  hapi: 'hapi · Claude',
+  hapi2: 'hapi · GPT',
+  hapi3: 'hapi · 其他'
+};
+
 const cfg = (prefix) => ({
   base: (process.env[`${prefix}_BASE_URL`] || '').replace(/\/+$/, ''),
   key: process.env[`${prefix}_API_KEY`] || '',
@@ -15,10 +26,28 @@ const cfg = (prefix) => ({
 });
 
 export function providerConfig(name = 'chat') {
-  const own = cfg(name.toUpperCase());
-  if (own.base && own.key) return own;
-  /* 没单独配就回落到主对话 */
-  return cfg('CHAT');
+  if (name === 'memory') {
+    /* 记忆压缩：单独配了就用单独的，否则复用主对话，只换模型 */
+    const own = cfg('MEMORY');
+    if (own.base && own.key) return own;
+    const chat = cfg('CHAT');
+    return { ...chat, model: own.model || chat.model };
+  }
+  return cfg(String(name).toUpperCase());
+}
+
+/* 给前端看的通道清单：哪些配好了、默认模型是什么 */
+export function channelsInfo() {
+  return CHANNELS.map((name) => {
+    const c = cfg(name.toUpperCase());
+    return {
+      name,
+      label: CHANNEL_LABELS[name] || name,
+      configured: Boolean(c.base && c.key),
+      base: c.base,
+      model: c.model
+    };
+  });
 }
 
 export function chatModelName() {
