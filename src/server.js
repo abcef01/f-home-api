@@ -4,6 +4,7 @@
  * 第五章：接 Supabase
  * 第六章：真正能对话（拼上下文 / 存消息 / 记忆压缩）
  */
+import crypto from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 import { supabase, dbReady } from './db.js';
@@ -33,6 +34,60 @@ app.use(
   })
 );
 app.use(express.json({ limit: '2mb' }));
+
+/* ============================================================
+   简易口令锁
+   ------------------------------------------------------------
+   APP_PASSPHRASE 是你自己设的口令，只存在后端。
+   登录后发给前端一个 HMAC 签名的令牌（30 天有效），
+   之后每个 /api/* 请求都要带上它。
+   没设 APP_PASSPHRASE 时锁是关的（方便第一次部署前跑通）。
+   ============================================================ */
+const PASSPHRASE = process.env.APP_PASSPHRASE || '';
+const AUTH_SECRET = process.env.APP_SECRET || (PASSPHRASE ? 'bh-' + PASSPHRASE : '');
+const TOKEN_DAYS = 30;
+
+function signToken(exp) {
+  const payload = String(exp);
+  const sig = crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('base64url');
+  return payload + '.' + sig;
+}
+
+function verifyToken(token) {
+  if (!token || !AUTH_SECRET) return false;
+  const [payload, sig] = String(token).split('.');
+  if (!payload || !sig) return false;
+  const expect = crypto.createHmac('sha256', AUTH_SECRET).update(payload).digest('base64url');
+  if (sig.length !== expect.length) return false;
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expect))) return false;
+  return Number(payload) > Date.now();
+}
+
+app.post('/api/auth/login', (req, res) => {
+  if (!PASSPHRASE) return res.json({ ok: true, token: null, authDisabled: true });
+  const { passphrase } = req.body || {};
+  if (!passphrase || passphrase !== PASSPHRASE) {
+    return res.status(401).json({ error: '口令不对' });
+  }
+  const exp = Date.now() + TOKEN_DAYS * 24 * 3600 * 1000;
+  res.json({ ok: true, token: signToken(exp), expiresAt: exp });
+});
+
+app.get('/api/auth/check', (req, res) => {
+  if (!PASSPHRASE) return res.json({ ok: true, authDisabled: true });
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  res.json({ ok: verifyToken(token) });
+});
+
+/* 保护其余所有 /api 接口 */
+app.use('/api', (req, res, next) => {
+  if (!PASSPHRASE) return next();                       // 没设口令就不锁
+  if (req.path.startsWith('/auth/')) return next();      // 登录本身要放行
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!verifyToken(token)) return res.status(401).json({ error: '未登录或令牌已过期' });
+  next();
+});
+
 
 /* 默认人设与生成参数，存在 app_settings 的 chat_params 里，前端可改 */
 const DEFAULT_SYSTEM_PROMPT = `你是 Elliott。你和对方住在一个叫 Bunny's Home 的地方。
