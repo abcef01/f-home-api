@@ -34,10 +34,30 @@ app.use(
 );
 app.use(express.json({ limit: '2mb' }));
 
-/* 人设。第七章前端调提示词时，这里可以从 app_settings 里读 */
-const SYSTEM_PROMPT = `你是 Elliott。你和对方住在一个叫 Bunny's Home 的地方。
+/* 默认人设与生成参数，存在 app_settings 的 chat_params 里，前端可改 */
+const DEFAULT_SYSTEM_PROMPT = `你是 Elliott。你和对方住在一个叫 Bunny's Home 的地方。
 说话简短、具体、有生活感，不要用“作为一个 AI”这类句子。
 你会记得你们之间发生过的事，提到的时候要自然，不要像在念清单。`;
+
+const DEFAULT_PARAMS = {
+  systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  temperature: 0.8,
+  contextRounds: 10
+};
+
+async function getChatParams() {
+  if (!dbReady) return DEFAULT_PARAMS;
+  const { data } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', 'chat_params')
+    .maybeSingle();
+  return {
+    systemPrompt: data?.value?.systemPrompt || DEFAULT_PARAMS.systemPrompt,
+    temperature: typeof data?.value?.temperature === 'number' ? data.value.temperature : DEFAULT_PARAMS.temperature,
+    contextRounds: Number(data?.value?.contextRounds) > 0 ? Number(data.value.contextRounds) : DEFAULT_PARAMS.contextRounds
+  };
+}
 
 /* ============================================================
    基础
@@ -73,6 +93,26 @@ app.get('/api/db-check', async (req, res) => {
   res.json({ ok: true, count, conversations: data });
 });
 
+/* 生成参数：人设提示词 / 温度 / 上下文轮数 */
+app.get('/api/settings/chat', async (req, res) => {
+  res.json(await getChatParams());
+});
+
+app.put('/api/settings/chat', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const cur = await getChatParams();
+  const body = req.body || {};
+  const next = {
+    systemPrompt: typeof body.systemPrompt === 'string' && body.systemPrompt.trim() ? body.systemPrompt.trim() : cur.systemPrompt,
+    temperature: typeof body.temperature === 'number' ? Math.min(1.5, Math.max(0, body.temperature)) : cur.temperature,
+    contextRounds: Number(body.contextRounds) > 0 ? Math.min(40, Math.floor(Number(body.contextRounds))) : cur.contextRounds
+  };
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'chat_params', value: next, updated_at: new Date().toISOString() });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(next);
+});
 /* ============================================================
    模型选择（第六章）：存在 app_settings 里，前端随时能改
    ============================================================ */
@@ -246,11 +286,12 @@ app.post('/api/chat/stream', async (req, res) => {
     if (saveErr) throw new Error('存消息失败：' + saveErr.message);
 
     /* 4. 拼上下文 */
+    const params = await getChatParams();
     const memoryBlock = (memories || []).map((m) => `· ${m.summary}`).join('\n');
     const system = memoryBlock
-      ? `${SYSTEM_PROMPT}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
-      : SYSTEM_PROMPT;
-    const recent = [...(history || []), { role: 'user', content: message }].slice(-20);
+      ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
+      : params.systemPrompt;
+    const recent = [...(history || []), { role: 'user', content: message }].slice(-params.contextRounds * 2);
 
     /* 5. 选模型 */
     const conf = req.body.model
@@ -266,6 +307,7 @@ app.post('/api/chat/stream', async (req, res) => {
     for await (const ev of streamChat({
       target: CHANNELS.includes(conf.channel) ? conf.channel : 'chat',
       model: conf.model,
+      temperature: params.temperature,
       system,
       messages: recent.map((m) => ({ role: m.role, content: m.content }))
     })) {
@@ -368,13 +410,14 @@ app.post('/api/chat', async (req, res) => {
     if (saveUserErr) throw new Error('存消息失败：' + saveUserErr.message);
 
     /* 4. 拼上下文：记忆摘要 + 最近若干条 */
+    const params = await getChatParams();
     const memoryBlock = (memories || []).map((m) => `· ${m.summary}`).join('\n');
     const recent = [...(history || []), { role: 'user', content: message }];
-    const trimmed = recent.slice(-20);
+    const trimmed = recent.slice(-params.contextRounds * 2);
 
     const system = memoryBlock
-      ? `${SYSTEM_PROMPT}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
-      : SYSTEM_PROMPT;
+      ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
+      : params.systemPrompt;
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -383,6 +426,7 @@ app.post('/api/chat', async (req, res) => {
     const reply = await callModel({
       target: CHANNELS.includes(conf.channel) ? conf.channel : 'chat',
       model: conf.model,
+      temperature: params.temperature,
       system,
       messages: trimmed.map((m) => ({ role: m.role, content: m.content }))
     });
