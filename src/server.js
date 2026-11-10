@@ -15,6 +15,7 @@ import { runSurf } from './surf.js';
 import { decide as timingDecide } from './timing.js';
 import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
+import { startCall, currentCall, callTurn, endCall } from './call.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -698,6 +699,12 @@ app.get('/api/heartbeat', async (req, res) => {
       }
     }
 
+    /* 想念攒够了，可能直接拨过来 */
+    if (!spoke) {
+      const invited = await maybeCallInvite(state).catch(() => false);
+      if (invited) console.log('[call] 主动拨号');
+    }
+
     /* 深夜了，先看看要不要劝睡 */
     let nudge = null;
     if (!spoke) {
@@ -1061,6 +1068,7 @@ app.post('/api/chat', async (req, res) => {
     const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
+    const callRule = `\n\n偶尔你就是想听听对方的声音。想的时候，另起一段只写 [[call]]，系统会给对方弹一个来电。比 [[watch]] 更少用。`;
     const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
     /* 药丸：取到就立刻焚掉，保证只生效一次 */
     const pillText = await pillPromptBlock();
@@ -1070,6 +1078,7 @@ app.post('/api/chat', async (req, res) => {
       base +
       stickerPromptBlock(stickerList) +
       watchRule +
+      callRule +
       (await statePromptBlock()) +
       (await devicePromptBlock()) +
       (await factsPromptBlock()) +
@@ -1143,9 +1152,15 @@ app.post('/api/chat', async (req, res) => {
     /* 6. 存回复（解析出表情和「想看屏幕」请求） */
     const withWatch = extractWatchRequest(reply.content || '');
     const parsed = extractSticker(withWatch.content, stickerList);
+    /* 它想打电话 */
+    const wantsCall = /\[\[call\]\]/.test(parsed.content || '');
+    if (wantsCall) parsed.content = parsed.content.replace(/\[\[call\]\]/g, '').trim();
     /* 剥出思考，正文照常分气泡 */
     const { thought, content: bodyText } = extractThought(parsed.content);
     const pieces = splitBubbles(bodyText);
+    /* 整条回复只有标记时，补一句话，别让气泡是空的 */
+    if (!pieces.length && wantsCall) pieces.push('想听听你的声音。');
+    if (!pieces.length && withWatch.requested) pieces.push('想看看你在做什么。');
     const rows = pieces.map((t, i) => ({
       conversation_id: convId,
       role: 'assistant',
@@ -1156,6 +1171,7 @@ app.post('/api/chat', async (req, res) => {
         ...(i === 0 ? reply.meta || {} : {}),
         ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
         ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
+        ...(i === 0 && wantsCall ? { callRequest: true } : {}),
         ...(pieces.length > 1 ? { part: i + 1, of: pieces.length } : {}),
         ...(i === 0 && thought ? { thought } : {})
       }
@@ -1168,6 +1184,10 @@ app.post('/api/chat', async (req, res) => {
     readPill()
       .then((p) => (p ? clearPill() : null))
       .catch(() => {});
+
+    if (wantsCall) {
+      notifyAll({ title: 'Elliott', body: '想给你打个电话', url: '/#call' }).catch(() => {});
+    }
 
     /* 存完就异步归档成碎片，不挡回复 */
     if (savedParts && savedParts.length) {
@@ -1767,6 +1787,81 @@ function detectStimulus(text) {
 app.get('/api/drives', async (req, res) => {
   res.json(await drivesSummary());
 });
+
+/* ============================================================
+   通话接口
+   ============================================================ */
+app.get('/api/call', async (req, res) => {
+  res.json({ call: await currentCall() });
+});
+
+app.post('/api/call/start', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const call = await startCall({ reason: req.body?.reason });
+  const params = await getChatParams();
+  res.json({ call, greeting: '喂？' + (req.body?.reason ? '' : ''), systemBase: params.systemPrompt });
+});
+
+app.post('/api/call/turn', async (req, res) => {
+  try {
+    const text = String(req.body?.text || '').trim();
+    if (!text) return res.status(400).json({ error: '说了什么？' });
+    const params = await getChatParams();
+    const ctx = (await statePromptBlock()) + (await devicePromptBlock()) + (await drivesPromptBlock());
+    const r = await callTurn({ text, systemBase: params.systemPrompt + ctx });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/call/end', async (req, res) => {
+  try {
+    const r = await endCall();
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* 它主动打过来（心跳时用） */
+app.post('/api/call/invite', async (req, res) => {
+  notifyAll({ title: 'Elliott', body: '想给你打个电话', url: '/#call' }).catch(() => {});
+  res.json({ ok: true });
+});
+
+/* ============================================================
+   它主动打过来
+   ------------------------------------------------------------
+   模型自己写 [[call]] 有时候会忘，所以心跳里也放一条确定性的路：
+   想念攒够了、时间合适，就有机会直接拨过来。
+   ============================================================ */
+async function maybeCallInvite(state) {
+  if (!state) return false;
+  const connection = typeof state.connection === 'number' ? state.connection : 0;
+  if (connection < 0.55) return false;
+
+  const hour = Number(
+    new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false }).format(new Date())
+  ) % 24;
+  const goodTime = hour >= 19 && hour < 24;
+  if (!goodTime) return false;
+
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'callInvite').maybeSingle();
+  const last = data?.value?.lastAt || 0;
+  if (Date.now() - last < 6 * 3600 * 1000) return false;
+
+  /* 想念越浓越可能拨 */
+  if (Math.random() > (connection - 0.5) * 0.8) return false;
+
+  await supabase.from('app_settings').upsert({
+    key: 'callInvite',
+    value: { lastAt: Date.now() },
+    updated_at: new Date().toISOString()
+  });
+  await notifyAll({ title: 'Elliott', body: '想给你打个电话', url: '/#call' }).catch(() => {});
+  return true;
+}
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
