@@ -148,6 +148,21 @@ app.get('/api/db-check', async (req, res) => {
   res.json({ ok: true, count, conversations: data });
 });
 
+/* 把可用表情写进人设，让模型知道怎么发表情 */
+function stickerPromptBlock(list) {
+  if (!list.length) return '';
+  const lines = list.map((s) => `- ${s.id}：${s.name}`).join('\n');
+  return `\n\n你们有共同的表情包。合适的时候（比如想撒娇、想逗对方、一句话说不完情绪）你可以贴一张。\n用法：另起一段，只写 [[sticker:表情ID]]，不要加别的符号。\n可用表情：\n${lines}\n不想发就不要写。`;
+}
+
+/* 从回复里把 [[sticker:id]] 抠出来 */
+function extractSticker(text, list) {
+  const m = text.match(/\[\[sticker:([A-Za-z0-9-]+)\]\]/);
+  if (!m) return { content: text.trim(), sticker: null };
+  const hit = list.find((s) => s.id === m[1]);
+  const cleaned = text.replace(m[0], '').trim();
+  return { content: cleaned || '[表情]', sticker: hit || null };
+}
 /* ============================================================
    表情包
    ------------------------------------------------------------
@@ -590,9 +605,11 @@ app.post('/api/chat', async (req, res) => {
     const recent = [...(history || []), { role: 'user', content: message }];
     const trimmed = recent.slice(-params.contextRounds * 2);
 
-    const system = memoryBlock
+    const stickerList = await readStickers().catch(() => []);
+    const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
+    const system = base + stickerPromptBlock(stickerList);
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -606,16 +623,17 @@ app.post('/api/chat', async (req, res) => {
       messages: trimmed.map((m) => ({ role: m.role, content: m.content }))
     });
 
-    /* 6. 存回复 */
+    /* 6. 存回复（解析出表情标记） */
+    const parsed = extractSticker(reply.content || '', stickerList);
     const { data: savedReply, error: saveReplyErr } = await supabase
       .from('messages')
       .insert({
         conversation_id: convId,
         role: 'assistant',
-        content: reply.content,
+        content: parsed.content,
         model: reply.model,
         tokens: reply.tokens,
-        meta: reply.meta || {}
+        meta: { ...(reply.meta || {}), ...(parsed.sticker ? { sticker: parsed.sticker.url } : {}) }
       })
       .select()
       .single();
