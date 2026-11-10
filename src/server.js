@@ -579,22 +579,21 @@ app.post('/api/respond', async (req, res) => {
     const text = (reply.content || '').trim();
     if (!text) return res.json({ skipped: 'empty' });
 
-    const { data: saved } = await supabase
-      .from('messages')
-      .insert({
-        conversation_id: conversationId,
-        role: 'assistant',
-        content: text.slice(0, 2000),
-        model: reply.model,
-        tokens: reply.tokens,
-        meta: { batched: pending.length }
-      })
-      .select()
-      .single();
+    const parts = splitBubbles(text);
+    const rows2 = parts.map((t, i) => ({
+      conversation_id: conversationId,
+      role: 'assistant',
+      content: t,
+      model: reply.model,
+      tokens: i === 0 ? reply.tokens : 0,
+      meta: { batched: pending.length, ...(parts.length > 1 ? { part: i + 1, of: parts.length } : {}) }
+    }));
+    const { data: savedParts2 } = await supabase.from('messages').insert(rows2).select();
+    const saved = savedParts2?.[0];
 
     await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversationId);
 
-    res.json({ reply: saved, answered: pending.length });
+    res.json({ reply: saved, replies: savedParts2 || [], answered: pending.length });
   } catch (e) {
     console.error('[respond]', e.message);
     res.status(500).json({ error: e.message });
@@ -1037,7 +1036,12 @@ app.post('/api/chat', async (req, res) => {
       : params.systemPrompt;
     const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
     const system =
-      base + stickerPromptBlock(stickerList) + watchRule + (await statePromptBlock()) + (await devicePromptBlock());
+      base +
+      stickerPromptBlock(stickerList) +
+      watchRule +
+      (await statePromptBlock()) +
+      (await devicePromptBlock()) +
+      (await factsPromptBlock());
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -1090,23 +1094,23 @@ app.post('/api/chat', async (req, res) => {
     /* 6. 存回复（解析出表情和「想看屏幕」请求） */
     const withWatch = extractWatchRequest(reply.content || '');
     const parsed = extractSticker(withWatch.content, stickerList);
-    const { data: savedReply, error: saveReplyErr } = await supabase
-      .from('messages')
-      .insert({
-        conversation_id: convId,
-        role: 'assistant',
-        content: parsed.content,
-        model: reply.model,
-        tokens: reply.tokens,
-        meta: {
-          ...(reply.meta || {}),
-          ...(parsed.sticker ? { sticker: parsed.sticker.url } : {}),
-          ...(withWatch.requested ? { watchRequest: true } : {})
-        }
-      })
-      .select()
-      .single();
+    const pieces = splitBubbles(parsed.content);
+    const rows = pieces.map((t, i) => ({
+      conversation_id: convId,
+      role: 'assistant',
+      content: t,
+      model: reply.model,
+      tokens: i === 0 ? reply.tokens : 0,
+      meta: {
+        ...(i === 0 ? reply.meta || {} : {}),
+        ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
+        ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
+        ...(pieces.length > 1 ? { part: i + 1, of: pieces.length } : {})
+      }
+    }));
+    const { data: savedParts, error: saveReplyErr } = await supabase.from('messages').insert(rows).select();
     if (saveReplyErr) throw new Error('存回复失败：' + saveReplyErr.message);
+    const savedReply = savedParts?.[0];
 
     await supabase
       .from('conversations')
@@ -1138,6 +1142,7 @@ app.post('/api/chat', async (req, res) => {
       conversationId: convId,
       userMessage: savedUser,
       reply: savedReply,
+      replies: savedParts || [],
       compressed
     });
   } catch (e) {
@@ -1359,6 +1364,91 @@ async function timingGate() {
     console.warn('[timing] 出错，按放行处理：', e.message.slice(0, 80));
     return true;
   }
+}
+
+/* ============================================================
+   重要事实：生日、约定、忌讳——这些永远不压缩
+   ============================================================ */
+const FACTS_KEY = 'facts';
+
+async function readFacts() {
+  if (!dbReady) return [];
+  const { data } = await supabase.from('app_settings').select('value').eq('key', FACTS_KEY).maybeSingle();
+  return Array.isArray(data?.value) ? data.value : [];
+}
+
+async function writeFacts(list) {
+  await supabase.from('app_settings').upsert({ key: FACTS_KEY, value: list, updated_at: new Date().toISOString() });
+}
+
+async function factsPromptBlock() {
+  const list = await readFacts();
+  if (!list.length) return '';
+  return `\n\n【你确定知道的关于对方的事】\n${list.map((f) => `· ${f.text}`).join('\n')}\n这些是长期有效的事实，可以自然地用，但不要每次都提。`;
+}
+
+app.get('/api/facts', async (req, res) => {
+  res.json({ facts: await readFacts() });
+});
+
+app.post('/api/facts', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const text = String(req.body?.text || '').trim();
+  if (!text) return res.status(400).json({ error: '内容不能为空' });
+  if (text.length > 200) return res.status(400).json({ error: '太长了' });
+  const list = await readFacts();
+  if (list.some((f) => f.text === text)) return res.json({ facts: list });
+  const next = [...list, { id: crypto.randomUUID(), text, at: Date.now() }].slice(-60);
+  await writeFacts(next);
+  res.json({ facts: next });
+});
+
+app.delete('/api/facts/:id', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const list = await readFacts();
+  const next = list.filter((f) => f.id !== req.params.id);
+  await writeFacts(next);
+  res.json({ facts: next });
+});
+
+/* ============================================================
+   把一段话切成几个气泡（最多 3 个）
+   像人一样：想到哪说到哪，而不是发一大段
+   ============================================================ */
+function splitBubbles(text, max = 3) {
+  const clean = String(text || '').trim();
+  if (!clean) return [];
+  if (clean.length <= 28) return [clean];
+
+  let parts = clean
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (parts.length === 1) {
+    /* 没有换行，就按句子切（保留标点） */
+    parts = clean
+      .split(/(?<=[。！？!?…~～])/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  /* 太碎的句子合并到上一段 */
+  const merged = [];
+  for (const p of parts) {
+    if (merged.length && merged[merged.length - 1].length + p.length <= 30) {
+      merged[merged.length - 1] += p;
+    } else {
+      merged.push(p);
+    }
+  }
+
+  if (merged.length <= max) return merged;
+
+  /* 超过 max 就把后面合并进最后一段 */
+  const head = merged.slice(0, max - 1);
+  const tail = merged.slice(max - 1).join('');
+  return [...head, tail];
 }
 
 app.listen(PORT, () => {
