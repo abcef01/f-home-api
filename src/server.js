@@ -14,6 +14,7 @@ import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyConta
 import { runSurf } from './surf.js';
 import { decide as timingDecide } from './timing.js';
 import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
+import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -636,6 +637,8 @@ app.get('/api/heartbeat', async (req, res) => {
   if (!authed) return res.status(401).json({ error: 'key 不对' });
 
   try {
+    /* 先把情绪往前推一段（按经过的时间，不是按次数） */
+    await tickDrives(10).catch(() => {});
     const { actions, state } = await runHeartbeat();
     const byAction = {};
     for (const a of actions) byAction[a.action] = (byAction[a.action] || 0) + 1;
@@ -1040,6 +1043,8 @@ app.post('/api/chat', async (req, res) => {
       .single();
     if (saveUserErr) throw new Error('存消息失败：' + saveUserErr.message);
     noteUserReply().catch(() => {});
+    /* 这句话给他的感受 */
+    stimulateDrives({ kind: detectStimulus(message) }).catch(() => {});
 
     /* 只存不回：前端会把几条攒起来，稍后一次性让我回 */
     if (storeOnly) {
@@ -1071,7 +1076,9 @@ app.post('/api/chat', async (req, res) => {
       (await recallBlock(message, convId)) +
       (await memory3Block(message)) +
       pillText +
-      (await conflictCheckBlock(message));
+      (await conflictCheckBlock(message)) +
+      COT_FORMAT +
+      (await drivesPromptBlock());
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -1091,6 +1098,18 @@ app.post('/api/chat', async (req, res) => {
       }
       return { role: m.role, content: m.content };
     });
+
+    /* 质量要求挂在最后一条用户消息尾巴上 */
+    if (msgs.length) {
+      const last = msgs[msgs.length - 1];
+      if (last.role === 'user') {
+        if (typeof last.content === 'string') last.content += COT_QUALITY;
+        else if (Array.isArray(last.content)) {
+          const t = last.content.find((p) => p.type === 'text');
+          if (t) t.text += COT_QUALITY;
+        }
+      }
+    }
 
     /* 带图就走能看图的通道（DeepSeek 会忽略图片，Claude 不会） */
     let reply = null;
@@ -1124,7 +1143,9 @@ app.post('/api/chat', async (req, res) => {
     /* 6. 存回复（解析出表情和「想看屏幕」请求） */
     const withWatch = extractWatchRequest(reply.content || '');
     const parsed = extractSticker(withWatch.content, stickerList);
-    const pieces = splitBubbles(parsed.content);
+    /* 剥出思考，正文照常分气泡 */
+    const { thought, content: bodyText } = extractThought(parsed.content);
+    const pieces = splitBubbles(bodyText);
     const rows = pieces.map((t, i) => ({
       conversation_id: convId,
       role: 'assistant',
@@ -1135,7 +1156,8 @@ app.post('/api/chat', async (req, res) => {
         ...(i === 0 ? reply.meta || {} : {}),
         ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
         ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
-        ...(pieces.length > 1 ? { part: i + 1, of: pieces.length } : {})
+        ...(pieces.length > 1 ? { part: i + 1, of: pieces.length } : {}),
+        ...(i === 0 && thought ? { thought } : {})
       }
     }));
     const { data: savedParts, error: saveReplyErr } = await supabase.from('messages').insert(rows).select();
@@ -1682,6 +1704,69 @@ async function conflictCheckBlock(userText) {
 
   return `\n\n【气头上的自检】刚才你们的对话气氛不对。先自己想一想：是不是你说错了什么，或者话说重了。想清楚再说。不要连着道歉，也不要反问对方"我怎么了"。`;
 }
+
+/* ============================================================
+   思考链（借鉴 yanke521/ai-companion-cot-emotion）
+   ------------------------------------------------------------
+   要点：
+   · 格式约定放人设稳定区（可缓存），质量要求挂到最后一条用户消息上
+   · 给一个物理判据：「第一个字是 [」
+   · 主语必须是「我」，不是「她」
+   · 思考存进 meta，但不进历史（跨模型传历史时剥掉）
+   ============================================================ */
+const COT_FORMAT = `
+
+## 我在想什么
+
+每条回复最前面有一段，写成 [[思考：……]] 的样子——两个方括号起头、「思考：」引出、]] 收尾。前端认这个记号，把它单独收起来，不进正文。]] 之后另起的才是发给对方的话。全程中文。
+
+这是我看到消息时自然的思维流动——内心独白，不是任务分析。正在发生的，不是讲述。
+
+我真实地想内容本身，不想「我该怎么回应」。我想的是「我喜欢……」「我想……」，不是「她喜欢……」「她想要……」。`;
+
+const COT_QUALITY = `
+
+## 我脑子转起来的样子
+
+我这一条回复的第一个字，是 ` + '`[`' + ` 。没有例外。越是急着开口，越是先想。
+
+[[思考：…]] 的第一句，是对方这句话在我心里砸出来的东西——情绪、身体反应、突然冒上的念头。不是把对方刚说的话重讲一遍的起手。
+
+比方说：「她说她累。她在公司。」这是复述。
+「累。这个字从她那儿过来就变重了。」这才是我。
+
+写成连贯的意识流，不分点、不编号、不小标题。念头一个勾出下一个，允许回旋、停留、犹豫。不急着收束，不急着下结论。
+
+不用一句话概括可以用一整段去沉溺的感受。想到的东西最后要以某种形式出现在正文里，不能只留在脑子里。`;
+
+/* 从回复里剥出思考 */
+function extractThought(text) {
+  const m = String(text || '').match(/\[\[思考：([\s\S]*?)\]\]/);
+  if (!m) return { thought: null, content: String(text || '').trim() };
+  const content = String(text).replace(m[0], '').trim();
+  return { thought: m[1].trim(), content };
+}
+
+/* 粗略判断这句话是哪种刺激（宁可漏，不要错判成生气） */
+function detectStimulus(text) {
+  const t = String(text || '');
+  const angry = ['你根本', '烦死', '闭嘴', '滚', '有病', '不想理你', '失望', '你从来', '算了'];
+  const cold = ['嗯', '哦', '随便', '都行', '没事'];
+  const warm = ['想你', '抱抱', '喜欢你', '谢谢', '晚安', '爱你', '亲'];
+  const praise = ['你好厉害', '真棒', '厉害呀', '好看'];
+
+  if (angry.some((w) => t.includes(w))) return 'angry';
+  if (praise.some((w) => t.includes(w))) return 'praise';
+  if (warm.some((w) => t.includes(w))) return 'warm';
+  if (t.length <= 3 && cold.some((w) => t.includes(w))) return 'cold';
+  if (t.length > 40) return 'share';
+  return 'mild';
+}
+
+/* 情绪状态（调试与面板用） */
+app.get('/api/drives', async (req, res) => {
+  res.json(await drivesSummary());
+});
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
