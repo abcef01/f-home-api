@@ -616,6 +616,17 @@ app.get('/api/heartbeat', async (req, res) => {
       }
     }
 
+    /* 深夜了，先看看要不要劝睡 */
+    let nudge = null;
+    if (!spoke) {
+      try {
+        nudge = await maybeNightNudge();
+        if (nudge) notifyAll({ title: 'Elliott', body: (nudge.content || '').slice(0, 60), url: '/#chat' }).catch(() => {});
+      } catch (e) {
+        console.warn('[nudge]', e.message);
+      }
+    }
+
     /* 它没想说话时，看看是不是该出去逛一圈 */
     let surfed = null;
     if (!spoke) {
@@ -638,7 +649,8 @@ app.get('/api/heartbeat', async (req, res) => {
       ok: true,
       triggers: actions.map((a) => a.action),
       spoke,
-      surfed
+      surfed,
+      nudge
     });
   } catch (e) {
     console.error('[heartbeat]', e.message);
@@ -1060,6 +1072,99 @@ app.get('/api/device', async (req, res) => {
   res.json({ status: data?.value || null });
 });
 
+/* ============================================================
+   深夜催睡
+   ------------------------------------------------------------
+   过了 23 点（到凌晨 4 点），如果对方还在，就劝一句去睡。
+   两次之间至少隔 75 分钟，一晚上最多 3 次。
+   ============================================================ */
+const NUDGE_KEY = 'nudge';
+const NUDGE_GAP = 75 * 60 * 1000;
+const NUDGE_MAX_PER_NIGHT = 3;
+
+const NIGHT_PROMPT = `现在很晚了，对方还没睡。
+说一句话劝对方去睡。要求：
+- 一到两句，语气自然，可以带一点心疼或者轻微的责备；
+- 结合你此刻的状态（如果你也困/也醒着，可以提一句）；
+- 不要长篇大论，不要说教，不要提“健康”“作息规律”这种词；
+- 不要问“在吗”，直接说。`;
+
+function shanghaiNow() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false
+  }).formatToParts(new Date());
+  const h = Number(parts.find((p) => p.type === 'hour')?.value || 0) % 24;
+  const m = Number(parts.find((p) => p.type === 'minute')?.value || 0);
+  return { hour: h, minute: m };
+}
+
+async function maybeNightNudge() {
+  const { hour } = shanghaiNow();
+  const isNight = hour >= 23 || hour < 4;
+  if (!isNight) return null;
+
+  const { data } = await supabase.from('app_settings').select('value').eq('key', NUDGE_KEY).maybeSingle();
+  const st = data?.value || {};
+  const now = Date.now();
+
+  /* 跨夜重置计数 */
+  const sameNight = st.nightOf === new Date().toISOString().slice(0, 10);
+  const count = sameNight ? st.count || 0 : 0;
+  if (count >= NUDGE_MAX_PER_NIGHT) return null;
+  if (st.lastAt && now - st.lastAt < NUDGE_GAP) return null;
+
+  const { data: convs } = await supabase
+    .from('conversations')
+    .select('id')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  const convId = convs?.[0]?.id;
+  if (!convId) return null;
+
+  const params = await getChatParams();
+  const ctx = await statePromptBlock();
+  const { data: recent } = await supabase
+    .from('messages')
+    .select('role, content')
+    .eq('conversation_id', convId)
+    .order('created_at', { ascending: false })
+    .limit(6);
+
+  const history = (recent || []).reverse().map((m) => ({ role: m.role, content: m.content }));
+  const reply = await callModel({
+    system: params.systemPrompt + ctx + '\n\n' + NIGHT_PROMPT,
+    messages: [...history, { role: 'user', content: '（现在还醒着）' }],
+    temperature: Math.min(1.2, params.temperature + 0.1)
+  });
+
+  const text = (reply.content || '').trim();
+  if (!text) return null;
+
+  const { data: saved } = await supabase
+    .from('messages')
+    .insert({
+      conversation_id: convId,
+      role: 'assistant',
+      content: text.slice(0, 300),
+      model: reply.model,
+      tokens: reply.tokens,
+      meta: { nudge: 'sleep' }
+    })
+    .select()
+    .single();
+
+  await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', convId);
+  await supabase.from('app_settings').upsert({
+    key: NUDGE_KEY,
+    value: { lastAt: now, count: count + 1, nightOf: new Date().toISOString().slice(0, 10) },
+    updated_at: new Date().toISOString()
+  });
+
+  return saved;
+}
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
 });
