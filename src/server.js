@@ -563,8 +563,12 @@ app.post('/api/respond', async (req, res) => {
     const memoryBlock = '';
     const history = rows.filter((m) => !pending.some((p) => p.id === m.id));
 
+    const joined = pending.map((m) => m.content).join(' ');
     const system =
-      params.systemPrompt + (await statePromptBlock()) + (await devicePromptBlock()) +
+      params.systemPrompt +
+      (await statePromptBlock()) +
+      (await devicePromptBlock()) +
+      (await recallBlock(joined, conversationId)) +
       `\n\n对方刚才连着发了几条（${pending.length} 条）。不要一条一条回，也不要逐条复述。把这几句当成一次连续的说话，回一次就好。`;
 
     const reply = await callModel({
@@ -1054,7 +1058,8 @@ app.post('/api/chat', async (req, res) => {
       watchRule +
       (await statePromptBlock()) +
       (await devicePromptBlock()) +
-      (await factsPromptBlock());
+      (await factsPromptBlock()) +
+      (await recallBlock(message, convId));
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -1511,6 +1516,70 @@ async function readHealthFrame(image) {
     }
   }
   return { error: '所有看图通道都失败了' };
+}
+
+/* ============================================================
+   回忆检索
+   ------------------------------------------------------------
+   思路：原文永远不丢（数据库里都在），摘要只是索引。
+   每次聊天时，用对方这句话里的关键词去翻旧消息，捞回几条相关的。
+   这样「三个月前提过的事」不会因为摘要把细节压掉而彻底消失。
+   ============================================================ */
+const STOP = new Set([
+  '什么', '怎么', '为什么', '可以', '我们', '你们', '他们', '这个', '那个', '现在', '今天',
+  '就是', '还是', '因为', '所以', '但是', '如果', '然后', '一个', '没有', '知道', '觉得',
+  '可能', '真的', '有点', '已经', '时候', '东西', '这样', '那样', '不是'
+]);
+
+function keywords(text) {
+  const clean = String(text || '').replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g, ' ');
+  const chunks = clean.split(/\s+/).filter(Boolean);
+  const out = new Set();
+
+  for (const chunk of chunks) {
+    if (/^[a-zA-Z0-9]+$/.test(chunk)) {
+      if (chunk.length >= 3) out.add(chunk.toLowerCase());
+      continue;
+    }
+    /* 中文：取 3 字滑窗，再去掉常见词 */
+    for (let i = 0; i + 3 <= chunk.length; i++) {
+      const w = chunk.slice(i, i + 3);
+      if (!STOP.has(w)) out.add(w);
+    }
+  }
+  return [...out].slice(0, 6);
+}
+
+async function recallBlock(userText, conversationId) {
+  if (!dbReady) return '';
+  const words = keywords(userText);
+  if (!words.length) return '';
+
+  const filter = words.map((w) => `content.ilike.%${w}%`).join(',');
+  const { data } = await supabase
+    .from('messages')
+    .select('role, content, created_at')
+    .eq('conversation_id', conversationId)
+    .or(filter)
+    .order('created_at', { ascending: false })
+    .limit(40);
+
+  if (!data || !data.length) return '';
+
+  /* 太新的不重复塞（最近 20 轮本来就在上下文里） */
+  const cutoff = Date.now() - 0;
+  const older = data.filter((m) => {
+    const ageDays = (cutoff - new Date(m.created_at).getTime()) / 86400000;
+    return ageDays > 0.5;
+  });
+  const picked = (older.length ? older : data).slice(0, 4).reverse();
+  if (!picked.length) return '';
+
+  const lines = picked
+    .map((m) => `- ${m.role === 'user' ? '对方' : '你'}：${m.content.replace(/\s+/g, ' ').slice(0, 90)}`)
+    .join('\n');
+
+  return `\n\n【以前聊到过的相关片段（据原文，不是摘要）】\n${lines}\n如果和现在的话题有关，可以自然地提起；无关就当没看见，不要硬扯。`;
 }
 
 app.listen(PORT, () => {
