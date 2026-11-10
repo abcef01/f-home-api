@@ -30,7 +30,7 @@ app.use(
       if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) return cb(null, true);
       return cb(new Error('CORS 不允许的来源：' + origin));
     },
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS']
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
   })
 );
 app.use(express.json({ limit: '2mb' }));
