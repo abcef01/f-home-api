@@ -148,6 +148,98 @@ app.get('/api/db-check', async (req, res) => {
   res.json({ ok: true, count, conversations: data });
 });
 
+/* ============================================================
+   表情包
+   ------------------------------------------------------------
+   图片存 Supabase Storage（bucket: stickers，公开可读），
+   列表存 app_settings 的 stickers 键，不需要额外建表。
+   ============================================================ */
+const STICKER_BUCKET = 'stickers';
+
+async function ensureBucket() {
+  const { data } = await supabase.storage.listBuckets();
+  if ((data || []).some((b) => b.name === STICKER_BUCKET)) return;
+  const { error } = await supabase.storage.createBucket(STICKER_BUCKET, {
+    public: true,
+    fileSizeLimit: '4MB'
+  });
+  if (error && !/already exists/i.test(error.message)) throw new Error(error.message);
+}
+
+async function readStickers() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'stickers').maybeSingle();
+  return Array.isArray(data?.value) ? data.value : [];
+}
+
+async function writeStickers(list) {
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'stickers', value: list, updated_at: new Date().toISOString() });
+  if (error) throw new Error(error.message);
+}
+
+app.get('/api/stickers', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  try {
+    res.json({ stickers: await readStickers() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/stickers', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { name, dataUrl } = req.body || {};
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+    return res.status(400).json({ error: 'dataUrl 不合法' });
+  }
+  if (dataUrl.length > 4 * 1024 * 1024) {
+    return res.status(400).json({ error: '图片太大了（上限约 3MB）' });
+  }
+  try {
+    await ensureBucket();
+    const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) return res.status(400).json({ error: '图片格式不对' });
+    const mime = m[1];
+    const buf = Buffer.from(m[2], 'base64');
+    const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    const id = crypto.randomUUID();
+    const path = `${id}.${ext}`;
+
+    const { error: upErr } = await supabase.storage
+      .from(STICKER_BUCKET)
+      .upload(path, buf, { contentType: mime, upsert: false });
+    if (upErr) throw new Error(upErr.message);
+
+    const { data: pub } = supabase.storage.from(STICKER_BUCKET).getPublicUrl(path);
+    const sticker = { id, name: (name || '表情').slice(0, 20), url: pub.publicUrl, path, createdAt: Date.now() };
+
+    const list = await readStickers();
+    list.push(sticker);
+    await writeStickers(list);
+
+    res.json({ sticker, stickers: list });
+  } catch (e) {
+    console.error('[stickers]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/stickers/:id', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  try {
+    const list = await readStickers();
+    const item = list.find((s) => s.id === req.params.id);
+    if (!item) return res.status(404).json({ error: '没有这个表情' });
+    if (item.path) {
+      await supabase.storage.from(STICKER_BUCKET).remove([item.path]);
+    }
+    await writeStickers(list.filter((s) => s.id !== req.params.id));
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 /* 界面设置（主题、名字、标题、圆角…）：整包存 JSON，跨设备同步 */
 app.get('/api/settings/ui', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
@@ -444,7 +536,7 @@ app.post('/api/chat/stream', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
 
-  const { conversationId, message } = req.body || {};
+  const { conversationId, message, sticker } = req.body || {};
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
@@ -485,7 +577,8 @@ app.post('/api/chat', async (req, res) => {
         conversation_id: convId,
         role: 'user',
         content: message,
-        tokens: estimateTokens(message)
+        tokens: estimateTokens(message),
+        meta: sticker ? { sticker } : {}
       })
       .select()
       .single();
