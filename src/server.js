@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Bunny's Home — 后端
  * 第四章：健康检查
  * 第五章：接 Supabase
@@ -878,7 +878,7 @@ app.post('/api/chat/stream', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
 
-  const { conversationId, message, sticker } = req.body || {};
+  const { conversationId, message, sticker, image } = req.body || {};
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
@@ -913,6 +913,28 @@ app.post('/api/chat', async (req, res) => {
     if (memErr) throw new Error('读记忆失败：' + memErr.message);
 
     /* 3. 先把用户这条存下来（即使模型失败，消息也不丢） */
+    /* 有图片就先传到 Storage */
+    let imageUrl = null;
+    if (image && String(image).startsWith('data:image')) {
+      try {
+        await ensureBucket();
+        const m2 = String(image).match(/^data:([^;]+);base64,(.+)$/);
+        if (m2) {
+          const ext = m2[1].includes('png') ? 'png' : 'jpg';
+          const path = `chat/${crypto.randomUUID()}.${ext}`;
+          const up = await supabase.storage
+            .from(STICKER_BUCKET)
+            .upload(path, Buffer.from(m2[2], 'base64'), { contentType: m2[1], upsert: false });
+          if (!up.error) {
+            const { data: pub } = supabase.storage.from(STICKER_BUCKET).getPublicUrl(path);
+            imageUrl = pub.publicUrl;
+          }
+        }
+      } catch (e) {
+        console.warn('[image] 上传失败', e.message.slice(0, 60));
+      }
+    }
+
     const { data: savedUser, error: saveUserErr } = await supabase
       .from('messages')
       .insert({
@@ -920,13 +942,12 @@ app.post('/api/chat', async (req, res) => {
         role: 'user',
         content: message,
         tokens: estimateTokens(message),
-        meta: sticker ? { sticker } : {}
+        meta: { ...(sticker ? { sticker } : {}), ...(imageUrl ? { image: imageUrl } : {}) }
       })
       .select()
       .single();
     if (saveUserErr) throw new Error('存消息失败：' + saveUserErr.message);
     noteUserReply().catch(() => {});
-
 
     /* 4. 拼上下文：记忆摘要 + 最近若干条 */
     const params = await getChatParams();
@@ -946,13 +967,49 @@ app.post('/api/chat', async (req, res) => {
     const conf = req.body.model
       ? { channel: req.body.channel || 'chat', model: req.body.model }
       : await getModelConf();
-    const reply = await callModel({
-      target: CHANNELS.includes(conf.channel) ? conf.channel : 'chat',
-      model: conf.model,
-      temperature: params.temperature,
-      system,
-      messages: trimmed.map((m) => ({ role: m.role, content: m.content }))
+    /* 最后一条如果带图，就发给能看图的模型 */
+    const msgs = trimmed.map((m, i) => {
+      const isLast = i === trimmed.length - 1;
+      if (isLast && image) {
+        return {
+          role: m.role,
+          content: [
+            { type: 'text', text: m.content || '（发了一张图片）' },
+            { type: 'image_url', image_url: { url: image } }
+          ]
+        };
+      }
+      return { role: m.role, content: m.content };
     });
+
+    /* 带图就走能看图的通道（DeepSeek 会忽略图片，Claude 不会） */
+    let reply = null;
+    if (image) {
+      for (const ch of ['hapi', 'alt']) {
+        const vconf = providerConfig(ch);
+        if (!vconf.base || !vconf.key) continue;
+        try {
+          reply = await callModel({
+            target: ch,
+            temperature: params.temperature,
+            system,
+            messages: msgs
+          });
+          break;
+        } catch (e) {
+          console.warn('[image] 通道', ch, '失败：', e.message.slice(0, 80));
+        }
+      }
+    }
+    if (!reply) {
+      reply = await callModel({
+        target: CHANNELS.includes(conf.channel) ? conf.channel : 'chat',
+        model: conf.model,
+        temperature: params.temperature,
+        system,
+        messages: msgs
+      });
+    }
 
     /* 6. 存回复（解析出表情和「想看屏幕」请求） */
     const withWatch = extractWatchRequest(reply.content || '');
