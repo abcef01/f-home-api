@@ -13,6 +13,7 @@ import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory
 import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyContactRelief } from './heartbeat.js';
 import { runSurf } from './surf.js';
 import { decide as timingDecide } from './timing.js';
+import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -1059,7 +1060,8 @@ app.post('/api/chat', async (req, res) => {
       (await statePromptBlock()) +
       (await devicePromptBlock()) +
       (await factsPromptBlock()) +
-      (await recallBlock(message, convId));
+      (await recallBlock(message, convId)) +
+      (await memory3Block(message));
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -1129,6 +1131,11 @@ app.post('/api/chat', async (req, res) => {
     const { data: savedParts, error: saveReplyErr } = await supabase.from('messages').insert(rows).select();
     if (saveReplyErr) throw new Error('存回复失败：' + saveReplyErr.message);
     const savedReply = savedParts?.[0];
+
+    /* 存完就异步归档成碎片，不挡回复 */
+    if (savedParts && savedParts.length) {
+      captureExchange(message, savedParts.map((x) => x.content).join('')).catch(() => {});
+    }
 
     await supabase
       .from('conversations')
@@ -1581,6 +1588,20 @@ async function recallBlock(userText, conversationId) {
 
   return `\n\n【以前聊到过的相关片段（据原文，不是摘要）】\n${lines}\n如果和现在的话题有关，可以自然地提起；无关就当没看见，不要硬扯。`;
 }
+
+/* 三层记忆：查看与确认 */
+app.get('/api/memory', async (req, res) => {
+  res.json(await getMemory());
+});
+
+app.post('/api/memory/candidate/:id', async (req, res) => {
+  const accept = req.body?.accept !== false;
+  res.json(await promoteCandidate(req.params.id, accept));
+});
+
+app.delete('/api/memory/core/:id', async (req, res) => {
+  res.json(await removeCore(req.params.id));
+});
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
