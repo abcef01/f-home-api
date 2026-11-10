@@ -114,10 +114,11 @@ export function decide({
   minutesSinceCheck = 10,
   unanswered = 0,
   misses = 0,
+  rate = 0.16,
   allowNight = true
 }) {
   const inferred = inferState({ hour, device, minutesSinceUser, unanswered });
-  const p = desire({ minutes: minutesSinceCheck, misses });
+  const p = desire({ minutes: minutesSinceCheck, misses, rate });
 
   const detail = { ...inferred, desire: Number(p.toFixed(2)), unanswered };
 

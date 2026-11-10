@@ -101,7 +101,8 @@ const DEFAULT_SYSTEM_PROMPT = `你是 Elliott。你和对方住在一个叫 Bunn
 const DEFAULT_PARAMS = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   temperature: 0.8,
-  contextRounds: 20
+  contextRounds: 20,
+  timingRate: 0.16
 };
 
 async function getChatParams() {
@@ -114,7 +115,8 @@ async function getChatParams() {
   return {
     systemPrompt: data?.value?.systemPrompt || DEFAULT_PARAMS.systemPrompt,
     temperature: typeof data?.value?.temperature === 'number' ? data.value.temperature : DEFAULT_PARAMS.temperature,
-    contextRounds: Number(data?.value?.contextRounds) > 0 ? Number(data.value.contextRounds) : DEFAULT_PARAMS.contextRounds
+    contextRounds: Number(data?.value?.contextRounds) > 0 ? Number(data.value.contextRounds) : DEFAULT_PARAMS.contextRounds,
+    timingRate: typeof data?.value?.timingRate === 'number' ? data.value.timingRate : DEFAULT_PARAMS.timingRate
   };
 }
 
@@ -357,7 +359,11 @@ app.put('/api/settings/chat', async (req, res) => {
   const next = {
     systemPrompt: typeof body.systemPrompt === 'string' && body.systemPrompt.trim() ? body.systemPrompt.trim() : cur.systemPrompt,
     temperature: typeof body.temperature === 'number' ? Math.min(1.5, Math.max(0, body.temperature)) : cur.temperature,
-    contextRounds: Number(body.contextRounds) > 0 ? Math.min(40, Math.floor(Number(body.contextRounds))) : cur.contextRounds
+    contextRounds: Number(body.contextRounds) > 0 ? Math.min(40, Math.floor(Number(body.contextRounds))) : cur.contextRounds,
+    timingRate:
+      typeof body.timingRate === 'number'
+        ? Math.min(0.6, Math.max(0.03, body.timingRate))
+        : cur.timingRate
   };
   const { error } = await supabase
     .from('app_settings')
@@ -529,6 +535,70 @@ app.post('/api/push/unsubscribe', async (req, res) => {
 app.post('/api/push/test', async (req, res) => {
   const r = await notifyAll({ title: 'Elliott', body: '测试通知：能收到就说明通了', url: '/#chat' });
   res.json(r);
+});
+
+/* ============================================================
+   合并回复：对方连发了几句，攒到一起再回一次
+   ============================================================ */
+app.post('/api/respond', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { conversationId } = req.body || {};
+  if (!conversationId) return res.status(400).json({ error: '缺少 conversationId' });
+
+  try {
+    /* 取最后一条 assistant 之后的所有消息 */
+    const { data: recent } = await supabase
+      .from('messages')
+      .select('id, role, content, created_at, meta')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: false })
+      .limit(20);
+
+    const rows = (recent || []).reverse();
+    const lastAssistant = rows.map((m) => m.role).lastIndexOf('assistant');
+    const pending = rows.slice(lastAssistant + 1).filter((m) => m.role === 'user');
+    if (!pending.length) return res.json({ skipped: 'nothing-to-answer' });
+
+    const params = await getChatParams();
+    const memoryBlock = '';
+    const history = rows.filter((m) => !pending.some((p) => p.id === m.id));
+
+    const system =
+      params.systemPrompt + (await statePromptBlock()) + (await devicePromptBlock()) +
+      `\n\n对方刚才连着发了几条（${pending.length} 条）。不要一条一条回，也不要逐条复述。把这几句当成一次连续的说话，回一次就好。`;
+
+    const reply = await callModel({
+      system,
+      messages: [
+        ...history.slice(-16).map((m) => ({ role: m.role, content: m.content })),
+        { role: 'user', content: pending.map((m) => m.content).join('\n') }
+      ],
+      temperature: params.temperature
+    });
+
+    const text = (reply.content || '').trim();
+    if (!text) return res.json({ skipped: 'empty' });
+
+    const { data: saved } = await supabase
+      .from('messages')
+      .insert({
+        conversation_id: conversationId,
+        role: 'assistant',
+        content: text.slice(0, 2000),
+        model: reply.model,
+        tokens: reply.tokens,
+        meta: { batched: pending.length }
+      })
+      .select()
+      .single();
+
+    await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conversationId);
+
+    res.json({ reply: saved, answered: pending.length });
+  } catch (e) {
+    console.error('[respond]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/surf', async (req, res) => {
@@ -879,7 +949,7 @@ app.post('/api/chat/stream', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
 
-  const { conversationId, message, sticker, image } = req.body || {};
+  const { conversationId, message, sticker, image, storeOnly } = req.body || {};
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
@@ -949,6 +1019,11 @@ app.post('/api/chat', async (req, res) => {
       .single();
     if (saveUserErr) throw new Error('存消息失败：' + saveUserErr.message);
     noteUserReply().catch(() => {});
+
+    /* 只存不回：前端会把几条攒起来，稍后一次性让我回 */
+    if (storeOnly) {
+      return res.json({ conversationId: convId, userMessage: savedUser, stored: true });
+    }
 
     /* 4. 拼上下文：记忆摘要 + 最近若干条 */
     const params = await getChatParams();
