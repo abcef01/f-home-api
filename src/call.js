@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 通话
  * ------------------------------------------------------------
  * 不是真的打电话（那要走运营商，一分钟几毛），
@@ -26,7 +26,17 @@ export const CALL_PROMPT = `
 - 不要用括号写动作，电话里看不到。
 
 如果这通电话该结束了（对方说要忙了、已经聊完、或者你想让他去睡），
-在最后另起一行只写 [[挂断]]，系统会挂掉这通电话，你刚说的话照常说完。`;
+**先好好说再见**，再挂。
+
+告别要具体，不要干巴巴一句"拜拜"：
+- 说清楚让他去做什么（"快去睡""路上小心""吃饭去"）；
+- 可以说一句你自己的状态（"我也去躺着""我等你明天说"）；
+- 语气跟你们刚才聊到的东西接上，别像客服。
+
+告别说完，另起一行只写 [[挂断]]。系统会挂掉这通电话，你刚说的话照常说完。
+
+反例（不要这样）：「那你去睡吧。[[挂断]]」——太干，像机器人。
+好一点：「行，那你钻被窝吧，别刷手机了。我这边也安静下来了。晚安。[[挂断]]」`;
 
 async function read() {
   if (!dbReady) return null;
@@ -63,7 +73,7 @@ export async function currentCall() {
  * 说一句，回一句
  * @returns {{reply: string, hangUp: boolean}}
  */
-export async function callTurn({ text, systemBase, history = [] }) {
+export async function callTurn({ text, systemBase, farewell = false }) {
   const c = await read();
   if (!c) throw new Error('没有正在进行的通话');
 
@@ -72,8 +82,14 @@ export async function callTurn({ text, systemBase, history = [] }) {
     { role: 'user', content: text }
   ];
 
+  const farewellRule = farewell
+    ? `\n\n【现在对方要挂电话了】说最后一句告别，然后另起一行写 [[挂断]]。
+告别要具体：让他去做什么（睡、吃饭、路上小心），可以说一句你自己的状态，语气跟刚才接上。
+不要只说"行""嗯""你睡吧"。`
+    : '';
+
   const r = await callModel({
-    system: systemBase + CALL_PROMPT,
+    system: systemBase + CALL_PROMPT + farewellRule,
     messages,
     temperature: 0.9,
     maxTokens: 900

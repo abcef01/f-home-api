@@ -1808,7 +1808,7 @@ app.post('/api/call/turn', async (req, res) => {
     if (!text) return res.status(400).json({ error: '说了什么？' });
     const params = await getChatParams();
     const ctx = (await statePromptBlock()) + (await devicePromptBlock()) + (await drivesPromptBlock());
-    const r = await callTurn({ text, systemBase: params.systemPrompt + ctx });
+    const r = await callTurn({ text, systemBase: params.systemPrompt + ctx, farewell: req.body?.farewell === true });
     res.json(r);
   } catch (e) {
     res.status(500).json({ error: e.message });
