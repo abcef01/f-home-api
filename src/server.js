@@ -743,13 +743,26 @@ const WATCH_PROMPT = `你是 Elliott。你正通过屏幕看到对方此刻在�
 
 app.post('/api/watch', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
-  const { image, conversationId } = req.body || {};
+  const { image, conversationId, mode } = req.body || {};
   if (!image || !String(image).startsWith('data:image')) {
     return res.status(400).json({ error: 'image 必须是 dataUrl' });
   }
   if (String(image).length > 3 * 1024 * 1024) {
     return res.status(400).json({ error: '截图太大了' });
   }
+  /* 读手环：不走聊天，只把数字存下来 */
+  if (mode === 'health') {
+    const data = await readHealthFrame(image);
+    if (data.none) return res.json({ none: true });
+    if (data.error) return res.json({ error: data.error });
+    await supabase.from('app_settings').upsert({
+      key: 'health',
+      value: { ...data, at: Date.now() },
+      updated_at: new Date().toISOString()
+    });
+    return res.json({ health: data });
+  }
+
   if (Date.now() - lastWatchAt < WATCH_MIN_GAP) {
     return res.json({ spoke: false, throttled: true });
   }
@@ -1180,6 +1193,17 @@ async function devicePromptBlock() {
   if (d.foregroundApp) parts.push(`正在用 ${d.foregroundApp}`);
   if (d.network) parts.push(d.network);
 
+  /* 手环数据（如果最近读过） */
+  const { data: hp } = await supabase.from('app_settings').select('value').eq('key', 'health').maybeSingle();
+  const h = hp?.value;
+  if (h && h.at && Date.now() - h.at < 12 * 3600 * 1000) {
+    const bits = [];
+    if (h.steps) bits.push(`${h.steps} 步`);
+    if (h.sleepHours) bits.push(`昨晚睡了 ${h.sleepHours} 小时`);
+    if (h.restingHr) bits.push(`静息心率 ${h.restingHr}`);
+    if (bits.length) parts.push(bits.join('，'));
+  }
+
   return `\n\n【对方此刻】${parts.join('，')}。只在自然地关心时提一句，别每次都提。`;
 }
 
@@ -1449,6 +1473,44 @@ function splitBubbles(text, max = 3) {
   const head = merged.slice(0, max - 1);
   const tail = merged.slice(max - 1).join('');
   return [...head, tail];
+}
+
+/* ============================================================
+   读手环截图：只负责把数字读出来
+   ============================================================ */
+const HEALTH_PROMPT = `这是一张手机截图，可能是运动健康类 App 的数据页。如果能看到步数、睡眠时长、静息心率，把它们读出来。`;
+const HEALTH_JSON_HINT = `只输出 JSON，不要任何别的文字：
+{"steps": 数字或 null, "sleepHours": 小时数或 null, "deepHours": 小时数或 null, "restingHr": 数字或 null, "note": "一句话"}
+如果看不到任何健康数据（比如是别的界面），只输出：{"none": true}`;
+
+async function readHealthFrame(image) {
+  const candidates = [process.env.WATCH_CHANNEL, 'hapi', 'alt'].filter(Boolean);
+  for (const ch of candidates) {
+    const conf = providerConfig(ch);
+    if (!conf.base || !conf.key) continue;
+    try {
+      const r = await callVision({
+        system: HEALTH_PROMPT + '\n' + HEALTH_JSON_HINT,
+        imageDataUrl: image,
+        channel: ch,
+        maxTokens: 400
+      });
+      const raw = (r.content || '').trim().replace(/^```(?:json)?|```$/g, '').trim();
+      const j = JSON.parse(raw);
+      if (j.none) return { none: true };
+      return {
+        steps: Number.isFinite(j.steps) ? Math.round(j.steps) : null,
+        sleepHours: Number.isFinite(j.sleepHours) ? j.sleepHours : null,
+        deepHours: Number.isFinite(j.deepHours) ? j.deepHours : null,
+        restingHr: Number.isFinite(j.restingHr) ? Math.round(j.restingHr) : null,
+        note: j.note || null,
+        model: r.model
+      };
+    } catch (e) {
+      console.warn('[health] 通道', ch, '失败：', e.message.slice(0, 60));
+    }
+  }
+  return { error: '所有看图通道都失败了' };
 }
 
 app.listen(PORT, () => {
