@@ -200,3 +200,53 @@ export async function* streamChat({
     }
   }
 }
+
+/* ============================================================
+   看图：把一张截图发给视觉模型
+   ------------------------------------------------------------
+   走的通道可以用 WATCH_CHANNEL / WATCH_MODEL 指定，默认复用主对话。
+   ============================================================ */
+export async function callVision({
+  system,
+  text = '这是对方此刻的屏幕。',
+  imageDataUrl,
+  channel = process.env.WATCH_CHANNEL || 'chat',
+  model = process.env.WATCH_MODEL || '',
+  temperature = 0.7,
+  maxTokens = 120
+}) {
+  const conf = providerConfig(channel);
+  const useModel = model || conf.model;
+  const { base, key } = conf;
+  if (!base) throw new Error('看图通道未配置');
+  if (!key) throw new Error('看图通道缺少 key');
+
+  const res = await fetch(endpoint(base) + '/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: useModel,
+      temperature,
+      max_tokens: maxTokens,
+      messages: [
+        ...(system ? [{ role: 'system', content: system }] : []),
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text },
+            { type: 'image_url', image_url: { url: imageDataUrl } }
+          ]
+        }
+      ]
+    })
+  });
+
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`看图失败 ${res.status}：${raw.slice(0, 200)}`);
+  const json = JSON.parse(raw);
+  return {
+    content: json.choices?.[0]?.message?.content ?? '',
+    model: json.model || useModel,
+    tokens: json.usage?.total_tokens ?? 0
+  };
+}

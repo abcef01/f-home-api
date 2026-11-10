@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import cors from 'cors';
 import { supabase, dbReady } from './db.js';
-import { callModel, listModels, providerConfig, channelsInfo, CHANNELS, streamChat } from './llm.js';
+import { callModel, callVision, listModels, providerConfig, channelsInfo, CHANNELS, streamChat } from './llm.js';
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
 
 const app = express();
@@ -459,6 +459,83 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
     .order('created_at', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
   res.json({ messages: data });
+});
+
+/* ============================================================
+   看屏幕：对方分享屏幕时，定时发一张截图过来
+   ------------------------------------------------------------
+   让视觉模型看一眼，决定要不要说一句。
+   说 [[silent]] 就当作没看见，不落库。
+   ============================================================ */
+const WATCH_MIN_GAP = 12000;   // 两次调用最短间隔，防风控
+let lastWatchAt = 0;
+
+const WATCH_PROMPT = `你是 Elliott。你正通过屏幕看到对方此刻在做什么。
+只回一句很短的话（不超过 25 个字），像坐在旁边陪着那样自然，可以关心、吐槽、好奇、提醒休息。
+如果画面没什么可说的（比如只是空白、静止不动、看不清、聊天窗口本身），只回复 [[silent]]，不要解释。`;
+
+app.post('/api/watch', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { image, conversationId } = req.body || {};
+  if (!image || !String(image).startsWith('data:image')) {
+    return res.status(400).json({ error: 'image 必须是 dataUrl' });
+  }
+  if (String(image).length > 3 * 1024 * 1024) {
+    return res.status(400).json({ error: '截图太大了' });
+  }
+  if (Date.now() - lastWatchAt < WATCH_MIN_GAP) {
+    return res.json({ spoke: false, throttled: true });
+  }
+  lastWatchAt = Date.now();
+
+  try {
+    const params = await getChatParams();
+    const result = await callVision({
+      system: WATCH_PROMPT + `\n\n对方叫你：${params.systemPrompt.includes('Bunny') ? '' : ''}`,
+      imageDataUrl: image
+    });
+
+    const text = (result.content || '').trim();
+    if (!text || text.includes('[[silent]]') || text.startsWith('[silent]')) {
+      return res.json({ spoke: false });
+    }
+
+    /* 有话说：存成一条 Elliott 的消息 */
+    let convId = conversationId;
+    if (!convId) {
+      const { data } = await supabase
+        .from('conversations')
+        .insert({ title: '陪着你' })
+        .select()
+        .single();
+      convId = data?.id;
+    }
+    if (!convId) return res.json({ spoke: false, error: '没有会话' });
+
+    const { data: saved, error } = await supabase
+      .from('messages')
+      .insert({
+        conversation_id: convId,
+        role: 'assistant',
+        content: text.slice(0, 200),
+        model: result.model,
+        tokens: result.tokens,
+        meta: { watched: true }
+      })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+
+    await supabase
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', convId);
+
+    res.json({ spoke: true, message: saved, conversationId: convId });
+  } catch (e) {
+    console.error('[watch]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 /* ============================================================
