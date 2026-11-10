@@ -155,6 +155,12 @@ function stickerPromptBlock(list) {
   return `\n\n你们有共同的表情包。合适的时候（比如想撒娇、想逗对方、一句话说不完情绪）你可以贴一张。\n用法：另起一段，只写 [[sticker:表情ID]]，不要加别的符号。\n可用表情：\n${lines}\n不想发就不要写。`;
 }
 
+/* 允许它主动提出「想看看你的屏幕」 */
+function extractWatchRequest(text) {
+  const hit = /\[\[watch\]\]/.test(text);
+  return { content: text.replace(/\[\[watch\]\]/g, '').trim(), requested: hit };
+}
+
 /* 从回复里把 [[sticker:id]] 抠出来 */
 function extractSticker(text, list) {
   const m = text.match(/\[\[sticker:([A-Za-z0-9-]+)\]\]/);
@@ -739,7 +745,8 @@ app.post('/api/chat', async (req, res) => {
     const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
-    const system = base + stickerPromptBlock(stickerList);
+    const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
+    const system = base + stickerPromptBlock(stickerList) + watchRule;
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -753,8 +760,9 @@ app.post('/api/chat', async (req, res) => {
       messages: trimmed.map((m) => ({ role: m.role, content: m.content }))
     });
 
-    /* 6. 存回复（解析出表情标记） */
-    const parsed = extractSticker(reply.content || '', stickerList);
+    /* 6. 存回复（解析出表情和「想看屏幕」请求） */
+    const withWatch = extractWatchRequest(reply.content || '');
+    const parsed = extractSticker(withWatch.content, stickerList);
     const { data: savedReply, error: saveReplyErr } = await supabase
       .from('messages')
       .insert({
@@ -763,7 +771,11 @@ app.post('/api/chat', async (req, res) => {
         content: parsed.content,
         model: reply.model,
         tokens: reply.tokens,
-        meta: { ...(reply.meta || {}), ...(parsed.sticker ? { sticker: parsed.sticker.url } : {}) }
+        meta: {
+          ...(reply.meta || {}),
+          ...(parsed.sticker ? { sticker: parsed.sticker.url } : {}),
+          ...(withWatch.requested ? { watchRequest: true } : {})
+        }
       })
       .select()
       .single();
