@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 心跳与情绪：把「积温」引擎接进 Bunny's Home
  * ------------------------------------------------------------
  * 引擎本身是纯数学（原作者 ClaraShafiq，MIT，见 vendor/jiwen.cjs）：
@@ -100,6 +100,14 @@ export async function noteUserReply() {
   const e = getEngine();
   await e.load();
   e.applyDelta({ connection: -0.28, arousal: -0.04 });
+  await e.save();
+}
+
+/* 开口之后部分缓解：引擎规定「开口不是终点」，所以不清零 */
+export async function applyContactRelief() {
+  const e = getEngine();
+  await e.load();
+  e.applyDelta({ connection: -0.35 });
   await e.save();
 }
 

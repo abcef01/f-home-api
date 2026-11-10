@@ -10,7 +10,7 @@ import cors from 'cors';
 import { supabase, dbReady } from './db.js';
 import { callModel, callVision, listModels, providerConfig, channelsInfo, CHANNELS, streamChat } from './llm.js';
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
-import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary } from './heartbeat.js';
+import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyContactRelief } from './heartbeat.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -98,7 +98,7 @@ const DEFAULT_SYSTEM_PROMPT = `你是 Elliott。你和对方住在一个叫 Bunn
 const DEFAULT_PARAMS = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   temperature: 0.8,
-  contextRounds: 10
+  contextRounds: 20
 };
 
 async function getChatParams() {
@@ -477,6 +477,26 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
 const PROACTIVE_PROMPT = `你忽然想跟对方说句话。可能是惦记、可能是想分享、也可能只是觉得安静太久了。
 要求：1–2 句，口语，别解释你为什么开口，别提“主动”“心跳”“系统”这些词。`;
 
+app.get('/api/conversation', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { data } = await supabase
+    .from('conversations')
+    .select('id, title, updated_at')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  let conv = data?.[0];
+  if (!conv) {
+    const { data: made, error } = await supabase
+      .from('conversations')
+      .insert({ title: "Bunny's Home" })
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    conv = made;
+  }
+  res.json({ conversation: conv });
+});
+
 app.get('/api/state', async (req, res) => {
   try {
     res.json(await stateSummary());
@@ -544,6 +564,7 @@ app.get('/api/heartbeat', async (req, res) => {
             .update({ updated_at: new Date().toISOString() })
             .eq('id', convId);
           spoke = saved;
+          applyContactRelief().catch(() => {});
         }
       }
     }
