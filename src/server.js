@@ -526,7 +526,7 @@ app.post('/api/push/unsubscribe', async (req, res) => {
 });
 
 app.post('/api/push/test', async (req, res) => {
-  const r = await notifyAll();
+  const r = await notifyAll({ title: 'Elliott', body: '测试通知：能收到就说明通了', url: '/#chat' });
   res.json(r);
 });
 
@@ -607,6 +607,11 @@ app.get('/api/heartbeat', async (req, res) => {
             .eq('id', convId);
           spoke = saved;
           applyContactRelief().catch(() => {});
+          notifyAll({
+            title: 'Elliott',
+            body: (text || '').slice(0, 60),
+            url: '/#chat'
+          }).catch(() => {});
         }
       }
     }
@@ -617,6 +622,13 @@ app.get('/api/heartbeat', async (req, res) => {
       try {
         const s = await runSurf();
         if (s.spoke) surfed = s.spoke;
+        if (s.spoke) {
+          notifyAll({
+            title: 'Elliott 看到个东西',
+            body: (s.spoke.content || '').slice(0, 60),
+            url: '/#chat'
+          }).catch(() => {});
+        }
       } catch (e) {
         console.warn('[surf]', e.message);
       }
@@ -915,7 +927,8 @@ app.post('/api/chat', async (req, res) => {
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
     const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
-    const system = base + stickerPromptBlock(stickerList) + watchRule + (await statePromptBlock());
+    const system =
+      base + stickerPromptBlock(stickerList) + watchRule + (await statePromptBlock()) + (await devicePromptBlock());
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -986,6 +999,60 @@ app.post('/api/chat', async (req, res) => {
     console.error('[chat]', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+/* ============================================================
+   设备状态：手机上报「我现在怎么样」
+   ------------------------------------------------------------
+   浏览器能给的就这些：电量、是否充电、网络、前后台、屏幕。
+   更细的（正在用哪个 App、锁屏状态）要原生 App 才拿得到。
+   ============================================================ */
+const DEVICE_KEY = 'device';
+
+/* 把设备状态翻译成一句人话，塞进提示词 */
+async function devicePromptBlock() {
+  if (!dbReady) return '';
+  const { data } = await supabase.from('app_settings').select('value').eq('key', DEVICE_KEY).maybeSingle();
+  const d = data?.value;
+  if (!d || !d.at) return '';
+  const mins = Math.round((Date.now() - d.at) / 60000);
+  if (mins > 720) return '';
+
+  const parts = [];
+  if (mins <= 2) parts.push(d.visibility === 'visible' ? '正在手机上看着你' : '刚才在手机上，现在可能锁屏了');
+  else if (mins < 60) parts.push(`${mins} 分钟前还在手机上`);
+  else parts.push('很久没碰手机了');
+
+  if (d.battery !== null && d.battery !== undefined) {
+    parts.push(`电量 ${d.battery}%${d.charging ? '，正在充电' : d.battery <= 20 ? '，快没电了' : ''}`);
+  }
+  if (d.network) parts.push(d.network);
+
+  return `\n\n【对方此刻】${parts.join('，')}。只在自然地关心时提一句，别每次都提。`;
+}
+
+app.post('/api/device', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const b = req.body || {};
+  const status = {
+    battery: typeof b.battery === 'number' ? Math.max(0, Math.min(100, Math.round(b.battery))) : null,
+    charging: typeof b.charging === 'boolean' ? b.charging : null,
+    online: typeof b.online === 'boolean' ? b.online : null,
+    network: typeof b.network === 'string' ? b.network.slice(0, 20) : null,
+    visibility: b.visibility === 'visible' ? 'visible' : 'hidden',
+    platform: typeof b.platform === 'string' ? b.platform.slice(0, 20) : null,
+    standalone: !!b.standalone,
+    screen: typeof b.screen === 'string' ? b.screen.slice(0, 20) : null,
+    at: Date.now()
+  };
+  const { error } = await supabase.from('app_settings').upsert({ key: DEVICE_KEY, value: status, updated_at: new Date().toISOString() });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, status });
+});
+
+app.get('/api/device', async (req, res) => {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', DEVICE_KEY).maybeSingle();
+  res.json({ status: data?.value || null });
 });
 
 app.listen(PORT, () => {
