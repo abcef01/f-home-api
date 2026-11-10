@@ -565,6 +565,10 @@ app.post('/api/respond', async (req, res) => {
     const history = rows.filter((m) => !pending.some((p) => p.id === m.id));
 
     const joined = pending.map((m) => m.content).join(' ');
+    /* 药丸：取到就立刻焚掉，保证只生效一次 */
+    const pillText = await pillPromptBlock();
+    if (pillText) await clearPill();
+
     const system =
       params.systemPrompt +
       (await statePromptBlock()) +
@@ -1053,6 +1057,10 @@ app.post('/api/chat', async (req, res) => {
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
     const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
+    /* 药丸：取到就立刻焚掉，保证只生效一次 */
+    const pillText = await pillPromptBlock();
+    if (pillText) await clearPill();
+
     const system =
       base +
       stickerPromptBlock(stickerList) +
@@ -1061,7 +1069,9 @@ app.post('/api/chat', async (req, res) => {
       (await devicePromptBlock()) +
       (await factsPromptBlock()) +
       (await recallBlock(message, convId)) +
-      (await memory3Block(message));
+      (await memory3Block(message)) +
+      pillText +
+      (await conflictCheckBlock(message));
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -1131,6 +1141,11 @@ app.post('/api/chat', async (req, res) => {
     const { data: savedParts, error: saveReplyErr } = await supabase.from('messages').insert(rows).select();
     if (saveReplyErr) throw new Error('存回复失败：' + saveReplyErr.message);
     const savedReply = savedParts?.[0];
+
+    /* 药丸用掉就烧掉 */
+    readPill()
+      .then((p) => (p ? clearPill() : null))
+      .catch(() => {});
 
     /* 存完就异步归档成碎片，不挡回复 */
     if (savedParts && savedParts.length) {
@@ -1602,6 +1617,71 @@ app.post('/api/memory/candidate/:id', async (req, res) => {
 app.delete('/api/memory/core/:id', async (req, res) => {
   res.json(await removeCore(req.params.id));
 });
+
+
+/* ============================================================
+   药盒：一次性指令，生效一次就烧掉
+   ============================================================ */
+const PILL_KEY = 'pill';
+
+async function readPill() {
+  if (!dbReady) return null;
+  const { data } = await supabase.from('app_settings').select('value').eq('key', PILL_KEY).maybeSingle();
+  const p = data?.value;
+  if (!p?.text) return null;
+  /* 超过 2 小时没用就自动失效 */
+  if (p.at && Date.now() - p.at > 2 * 3600 * 1000) return null;
+  return p;
+}
+
+async function clearPill() {
+  await supabase.from('app_settings').delete().eq('key', PILL_KEY);
+}
+
+async function pillPromptBlock() {
+  const p = await readPill();
+  if (!p) return '';
+  return `\n\n【这一轮额外的要求（只这一次，之后作废）】\n${p.text}\n这只是本次的临时要求，不代表长期设定。`;
+}
+
+/* 药盒接口 */
+app.get('/api/pill', async (req, res) => {
+  res.json({ pill: await readPill() });
+});
+
+app.post('/api/pill', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const text = String(req.body?.text || '').trim().slice(0, 120);
+  if (!text) return res.status(400).json({ error: '内容不能为空' });
+  const pill = { text, at: Date.now() };
+  await supabase.from('app_settings').upsert({ key: PILL_KEY, value: pill, updated_at: new Date().toISOString() });
+  res.json({ pill });
+});
+
+app.delete('/api/pill', async (req, res) => {
+  await clearPill();
+  res.json({ ok: true });
+});
+
+/* ============================================================
+   气头上的自检（借鉴 bvsden/emotion-system，MIT）
+   ------------------------------------------------------------
+   它不告诉模型「你现在是什么情绪」——那样模型会照着演，越演越夸张。
+   只在气氛不对时提醒一句：先自查，别把火撒出去。
+   ============================================================ */
+const CONFLICT_WORDS = ['你根本', '烦死', '别说了', '无语', '生气', '有病', '滚', '不想说', '随便你', '失望', '算了'];
+
+async function conflictCheckBlock(userText) {
+  const text = String(userText || '');
+  const hitWord = CONFLICT_WORDS.find((w) => text.includes(w));
+  if (!hitWord) return '';
+
+  const s = await stateSummary().catch(() => null);
+  const valence = typeof s?.valence === 'number' ? s.valence : 0.5;
+  if (valence > 0.35) return '';
+
+  return `\n\n【气头上的自检】刚才你们的对话气氛不对。先自己想一想：是不是你说错了什么，或者话说重了。想清楚再说。不要连着道歉，也不要反问对方"我怎么了"。`;
+}
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
