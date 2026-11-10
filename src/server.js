@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Bunny's Home — 后端
  * 第四章：健康检查
  * 第五章：接 Supabase
@@ -12,6 +12,7 @@ import { callModel, callVision, listModels, providerConfig, channelsInfo, CHANNE
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
 import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyContactRelief } from './heartbeat.js';
 import { runSurf } from './surf.js';
+import { decide as timingDecide } from './timing.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -562,7 +563,7 @@ app.get('/api/heartbeat', async (req, res) => {
     for (const a of actions) byAction[a.action] = (byAction[a.action] || 0) + 1;
 
     let spoke = null;
-    if (byAction.contact) {
+    if (byAction.contact && (await timingGate())) {
       /* 找最近一个会话，把话放进那里 */
       const { data: convs } = await supabase
         .from('conversations')
@@ -1222,6 +1223,69 @@ async function maybeNightNudge() {
 
   return saved;
 }
+/* ============================================================
+   打扰闸门：泊松 + 贝叶斯 + 信息增益
+   返回 true 表示「现在可以开口」
+   ============================================================ */
+async function timingGate() {
+  try {
+    const { data: devRow } = await supabase.from('app_settings').select('value').eq('key', 'device').maybeSingle();
+    const { data: timRow } = await supabase.from('app_settings').select('value').eq('key', 'timing').maybeSingle();
+    const st = timRow?.value || {};
+
+    const { data: lastUser } = await supabase
+      .from('messages')
+      .select('created_at')
+      .eq('role', 'user')
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const minutesSinceUser = lastUser?.[0]?.created_at
+      ? (Date.now() - new Date(lastUser[0].created_at).getTime()) / 60000
+      : 999;
+
+    const { data: tail } = await supabase.from('messages').select('role').order('created_at', { ascending: false }).limit(6);
+    let unanswered = 0;
+    for (const m of tail || []) {
+      if (m.role === 'assistant') unanswered += 1;
+      else break;
+    }
+
+    const hour = Number(
+      new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false }).format(new Date())
+    ) % 24;
+
+    const minutesSinceCheck = st.lastCheck ? Math.min(240, (Date.now() - st.lastCheck) / 60000) : 10;
+
+    const v = timingDecide({
+      hour,
+      device: devRow?.value || {},
+      minutesSinceUser,
+      minutesSinceCheck,
+      unanswered,
+      misses: st.misses || 0,
+      allowNight: false
+    });
+
+    await supabase.from('app_settings').upsert({
+      key: 'timing',
+      value: {
+        lastCheck: Date.now(),
+        misses: v.send ? 0 : Math.min(6, (st.misses || 0) + 1),
+        lastReason: v.reason,
+        lastState: v.detail?.label || null
+      },
+      updated_at: new Date().toISOString()
+    });
+
+    console.log('[timing]', v.send ? '放行' : '拦下', '—', v.reason, JSON.stringify(v.detail?.obs || {}));
+    return v.send;
+  } catch (e) {
+    console.warn('[timing] 出错，按放行处理：', e.message.slice(0, 80));
+    return true;
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
 });
