@@ -1,0 +1,14 @@
+{
+  "appId": "app.bunnyhome.companion",
+  "appName": "Bunny's Home",
+  "webDir": "www",
+  "server": {
+    "url": "https://f-home-web.vercel.app",
+    "cleartext": false,
+    "allowNavigation": ["f-home-web.vercel.app", "f-home-api.onrender.com"]
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#FDFBF6"
+  }
+}

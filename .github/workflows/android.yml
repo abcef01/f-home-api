@@ -1,0 +1,58 @@
+name: build-android
+
+# 在云端把网页包成安卓 App，产出可安装的 APK。
+# 用法：仓库 → Actions → build-android → Run workflow → 跑完在最下面下载 artifact。
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      - 'android-*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装依赖
+        working-directory: mobile
+        run: npm install --no-audit --no-fund
+
+      - name: 生成安卓工程
+        working-directory: mobile
+        run: npx cap add android
+
+      - name: 注入原生插件
+        run: node mobile/native/inject.mjs
+
+      - name: 同步资源
+        working-directory: mobile
+        run: npx cap sync android
+
+      - name: 编译 debug APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bunny-home-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+# 说明：
+# · 这是 debug 包，可以直接安装，不需要签名（也不能上架商店）
+# · 装之前手机要允许「安装未知来源应用」
+# · 首次打开需要在系统设置里授予「使用情况访问」，否则拿不到「正在用哪个 App」

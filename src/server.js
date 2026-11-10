@@ -1026,6 +1026,8 @@ async function devicePromptBlock() {
   if (d.battery !== null && d.battery !== undefined) {
     parts.push(`电量 ${d.battery}%${d.charging ? '，正在充电' : d.battery <= 20 ? '，快没电了' : ''}`);
   }
+  if (d.locked === true) parts.push('手机锁着，人不一定在看');
+  if (d.foregroundApp) parts.push(`正在用 ${d.foregroundApp}`);
   if (d.network) parts.push(d.network);
 
   return `\n\n【对方此刻】${parts.join('，')}。只在自然地关心时提一句，别每次都提。`;
@@ -1043,6 +1045,9 @@ app.post('/api/device', async (req, res) => {
     platform: typeof b.platform === 'string' ? b.platform.slice(0, 20) : null,
     standalone: !!b.standalone,
     screen: typeof b.screen === 'string' ? b.screen.slice(0, 20) : null,
+    /* 以下两项只有原生 App 能给 */
+    foregroundApp: typeof b.foregroundApp === 'string' ? b.foregroundApp.slice(0, 40) : null,
+    locked: typeof b.locked === 'boolean' ? b.locked : null,
     at: Date.now()
   };
   const { error } = await supabase.from('app_settings').upsert({ key: DEVICE_KEY, value: status, updated_at: new Date().toISOString() });
