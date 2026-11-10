@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Bunny's Home — 后端
  * 第四章：健康检查
  * 第五章：接 Supabase
@@ -11,6 +11,7 @@ import { supabase, dbReady } from './db.js';
 import { callModel, callVision, listModels, providerConfig, channelsInfo, CHANNELS, streamChat } from './llm.js';
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
 import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyContactRelief } from './heartbeat.js';
+import { runSurf } from './surf.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -497,6 +498,15 @@ app.get('/api/conversation', async (req, res) => {
   res.json({ conversation: conv });
 });
 
+app.post('/api/surf', async (req, res) => {
+  try {
+    const r = await runSurf({ force: req.body?.force !== false });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/state', async (req, res) => {
   try {
     res.json(await stateSummary());
@@ -569,11 +579,22 @@ app.get('/api/heartbeat', async (req, res) => {
       }
     }
 
+    /* 它没想说话时，看看是不是该出去逛一圈 */
+    let surfed = null;
+    if (!spoke) {
+      try {
+        const s = await runSurf();
+        if (s.spoke) surfed = s.spoke;
+      } catch (e) {
+        console.warn('[surf]', e.message);
+      }
+    }
+
     res.json({
       ok: true,
-      minutes: Math.round(state ? 0 : 0),
       triggers: actions.map((a) => a.action),
-      spoke
+      spoke,
+      surfed
     });
   } catch (e) {
     console.error('[heartbeat]', e.message);
