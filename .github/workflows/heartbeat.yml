@@ -1,0 +1,35 @@
+name: heartbeat
+
+# 定期叫一下后端，让它算算「现在该不该主动说话」。
+# 开启方法见文末。
+
+on:
+  schedule:
+    # 每 15 分钟一次（GitHub 的 cron 最小间隔 5 分钟，实际常延后）
+    - cron: '*/15 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  beat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: call heartbeat
+        run: |
+          if [ -z "${{ secrets.HEARTBEAT_URL }}" ] || [ -z "${{ secrets.HEARTBEAT_KEY }}" ]; then
+            echo "没有配置 HEARTBEAT_URL / HEARTBEAT_KEY，跳过"
+            exit 0
+          fi
+          code=$(curl -s -o /tmp/out.json -w '%{http_code}' \
+            "${{ secrets.HEARTBEAT_URL }}/api/heartbeat?key=${{ secrets.HEARTBEAT_KEY }}")
+          echo "HTTP $code"
+          cat /tmp/out.json || true
+          test "$code" = "200"
+
+# 开启步骤（在 GitHub 仓库 Settings → Secrets and variables → Actions 里加两条）：
+#   HEARTBEAT_URL  = https://f-home-api.onrender.com
+#   HEARTBEAT_KEY  = 自己随便定一串，和 Render 里的 HEARTBEAT_KEY 保持一致
+#
+# Render → Secret File .env 里加：
+#   HEARTBEAT_KEY=那串一样的
+#
+# 不配也能用：手机/电脑打开 App 时，前端每 90 秒会自己叫一次。

@@ -10,6 +10,7 @@ import cors from 'cors';
 import { supabase, dbReady } from './db.js';
 import { callModel, callVision, listModels, providerConfig, channelsInfo, CHANNELS, streamChat } from './llm.js';
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
+import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary } from './heartbeat.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -468,6 +469,98 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
 });
 
 /* ============================================================
+   心跳：让它自己开口
+   ------------------------------------------------------------
+   定时（或前端轮询）调用 /api/heartbeat：
+   积温引擎按真实时间漂移，到阈值就 contact → 生成一句话存进会话。
+   ============================================================ */
+const PROACTIVE_PROMPT = `你忽然想跟对方说句话。可能是惦记、可能是想分享、也可能只是觉得安静太久了。
+要求：1–2 句，口语，别解释你为什么开口，别提“主动”“心跳”“系统”这些词。`;
+
+app.get('/api/state', async (req, res) => {
+  try {
+    res.json(await stateSummary());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/heartbeat', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+
+  /* 允许外部定时任务用 key 调，避免被随便刷 */
+  const cronKey = process.env.HEARTBEAT_KEY || '';
+  const given = req.query.key || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const authed = cronKey ? given === cronKey : true;
+  if (!authed) return res.status(401).json({ error: 'key 不对' });
+
+  try {
+    const { actions, state } = await runHeartbeat();
+    const byAction = {};
+    for (const a of actions) byAction[a.action] = (byAction[a.action] || 0) + 1;
+
+    let spoke = null;
+    if (byAction.contact) {
+      /* 找最近一个会话，把话放进那里 */
+      const { data: convs } = await supabase
+        .from('conversations')
+        .select('id')
+        .order('updated_at', { ascending: false })
+        .limit(1);
+      const convId = convs?.[0]?.id;
+      if (convId) {
+        const params = await getChatParams();
+        const ctx = await statePromptBlock();
+        const { data: recent } = await supabase
+          .from('messages')
+          .select('role, content')
+          .eq('conversation_id', convId)
+          .order('created_at', { ascending: false })
+          .limit(8);
+
+        const history = (recent || []).reverse().map((m) => ({ role: m.role, content: m.content }));
+        const reply = await callModel({
+          system: params.systemPrompt + ctx + '\n\n' + PROACTIVE_PROMPT,
+          messages: [...history, { role: 'user', content: '（沉默中，你可以先开口）' }],
+          temperature: Math.min(1.2, params.temperature + 0.1)
+        });
+
+        const text = (reply.content || '').trim();
+        if (text) {
+          const { data: saved } = await supabase
+            .from('messages')
+            .insert({
+              conversation_id: convId,
+              role: 'assistant',
+              content: text.slice(0, 400),
+              model: reply.model,
+              tokens: reply.tokens,
+              meta: { proactive: true }
+            })
+            .select()
+            .single();
+          await supabase
+            .from('conversations')
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', convId);
+          spoke = saved;
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      minutes: Math.round(state ? 0 : 0),
+      triggers: actions.map((a) => a.action),
+      spoke
+    });
+  } catch (e) {
+    console.error('[heartbeat]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ============================================================
    看屏幕：对方分享屏幕时，定时发一张截图过来
    ------------------------------------------------------------
    让视觉模型看一眼，决定要不要说一句。
@@ -734,6 +827,8 @@ app.post('/api/chat', async (req, res) => {
       .select()
       .single();
     if (saveUserErr) throw new Error('存消息失败：' + saveUserErr.message);
+    noteUserReply().catch(() => {});
+
 
     /* 4. 拼上下文：记忆摘要 + 最近若干条 */
     const params = await getChatParams();
@@ -746,7 +841,7 @@ app.post('/api/chat', async (req, res) => {
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
     const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
-    const system = base + stickerPromptBlock(stickerList) + watchRule;
+    const system = base + stickerPromptBlock(stickerList) + watchRule + (await statePromptBlock());
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
