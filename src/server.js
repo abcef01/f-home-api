@@ -255,6 +255,59 @@ app.delete('/api/stickers/:id', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+/* ============================================================
+   头像：双方各一张，存在 Storage 的 avatars/ 下
+   ============================================================ */
+app.get('/api/avatars', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'avatars').maybeSingle();
+  res.json({ avatars: data?.value || {} });
+});
+
+app.post('/api/avatars', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { who, dataUrl } = req.body || {};
+  if (!['me', 'ta'].includes(who)) return res.status(400).json({ error: 'who 只能是 me / ta' });
+  if (!dataUrl || !String(dataUrl).startsWith('data:')) return res.status(400).json({ error: 'dataUrl 不合法' });
+  if (String(dataUrl).length > 6 * 1024 * 1024) return res.status(400).json({ error: '图片太大了' });
+
+  try {
+    await ensureBucket();
+    const m = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) return res.status(400).json({ error: '格式不对' });
+    const mime = m[1];
+    const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    const path = 'avatars/' + who + '.' + ext;
+    const { error: upErr } = await supabase.storage
+      .from(STICKER_BUCKET)
+      .upload(path, Buffer.from(m[2], 'base64'), { contentType: mime, upsert: true });
+    if (upErr) throw new Error(upErr.message);
+
+    const { data: pub } = supabase.storage.from(STICKER_BUCKET).getPublicUrl(path);
+    const url = pub.publicUrl + '?v=' + Date.now();
+
+    const { data: row } = await supabase.from('app_settings').select('value').eq('key', 'avatars').maybeSingle();
+    const avatars = Object.assign({}, row && row.value ? row.value : {}, { [who]: url });
+    await supabase.from('app_settings').upsert({ key: 'avatars', value: avatars, updated_at: new Date().toISOString() });
+
+    res.json({ ok: true, url, avatars });
+  } catch (e) {
+    console.error('[avatars]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/avatars/:who', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const who = req.params.who;
+  if (!['me', 'ta'].includes(who)) return res.status(400).json({ error: 'who 不对' });
+  const { data: row } = await supabase.from('app_settings').select('value').eq('key', 'avatars').maybeSingle();
+  const avatars = Object.assign({}, row && row.value ? row.value : {});
+  delete avatars[who];
+  await supabase.from('app_settings').upsert({ key: 'avatars', value: avatars, updated_at: new Date().toISOString() });
+  res.json({ ok: true, avatars });
+});
+
 /* 界面设置（主题、名字、标题、圆角…）：整包存 JSON，跨设备同步 */
 app.get('/api/settings/ui', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
