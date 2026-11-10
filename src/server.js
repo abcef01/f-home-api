@@ -148,6 +148,33 @@ app.get('/api/db-check', async (req, res) => {
   res.json({ ok: true, count, conversations: data });
 });
 
+/* 界面设置（主题、名字、标题、圆角…）：整包存 JSON，跨设备同步 */
+app.get('/api/settings/ui', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('value')
+    .eq('key', 'ui')
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ value: data?.value || null });
+});
+
+app.put('/api/settings/ui', async (req, res) => {
+  if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+  const value = req.body || {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return res.status(400).json({ error: 'value 必须是对象' });
+  }
+  if (JSON.stringify(value).length > 20000) {
+    return res.status(400).json({ error: '配置太大了' });
+  }
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ key: 'ui', value, updated_at: new Date().toISOString() });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, value });
+});
 /* 生成参数：人设提示词 / 温度 / 上下文轮数 */
 app.get('/api/settings/chat', async (req, res) => {
   res.json(await getChatParams());
