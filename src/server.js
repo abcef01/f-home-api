@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Bunny's Home — 后端
  * 第四章：健康检查
  * 第五章：接 Supabase
@@ -12,6 +12,7 @@ import { callModel, callVision, listModels, providerConfig, channelsInfo, CHANNE
 import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory.js';
 import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyContactRelief } from './heartbeat.js';
 import { runSurf } from './surf.js';
+import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -496,6 +497,37 @@ app.get('/api/conversation', async (req, res) => {
     conv = made;
   }
   res.json({ conversation: conv });
+});
+
+/* ============================================================
+   后台通知
+   ============================================================ */
+app.get('/api/push/key', async (req, res) => {
+  try {
+    const k = await getKeys();
+    res.json({ publicKey: k.publicKey });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/push/subscribe', async (req, res) => {
+  try {
+    const n = await addSubscription(req.body?.subscription);
+    res.json({ ok: true, devices: n });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/push/unsubscribe', async (req, res) => {
+  await removeSubscription(req.body?.endpoint);
+  res.json({ ok: true });
+});
+
+app.post('/api/push/test', async (req, res) => {
+  const r = await notifyAll();
+  res.json(r);
 });
 
 app.post('/api/surf', async (req, res) => {
