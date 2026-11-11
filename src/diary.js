@@ -51,6 +51,37 @@ export function addEntry(D, { text, who = 'me', date, image }) {
   return e;
 }
 
+export function addComment(D, id, { text, who = 'me' }) {
+  const e = D.entries.find((x) => x.id === id);
+  if (!e) throw new Error('没有这一条');
+  const t = String(text || '').trim().slice(0, 120);
+  if (!t) throw new Error('说点什么');
+  e.comments = e.comments || [];
+  e.comments.push({ who, text: t, at: Date.now() });
+  return e;
+}
+
+/* 他读了你的手帐，留一句 */
+export async function autoComment(entry) {
+  if (!entry || entry.who !== 'me') return null;
+  try {
+    const r = await callModel({
+      target: 'memory',
+      system:
+        '你在读对方写的手帐。留一句话——像在页边用铅笔写的批注：可以接一句、问一句、或者只说你也想到了什么。二十字上下，不要总结，不要评价他的情绪，不要用"抱抱""加油"。只输出这句话。',
+      messages: [{ role: 'user', content: entry.text }],
+      temperature: 0.9,
+      maxTokens: 200
+    });
+    const t = (r.content || '').trim().slice(0, 80);
+    if (!t) return null;
+    return { who: 'ta', text: t, at: Date.now() };
+  } catch (err) {
+    console.warn('[diary] 留言失败：', err.message.slice(0, 80));
+    return null;
+  }
+}
+
 export function toggleLike(D, id, who = 'me') {
   const e = D.entries.find((x) => x.id === id);
   if (!e) throw new Error('没有这一条');

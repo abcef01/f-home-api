@@ -21,7 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
-import { load as loadDiary, save as saveDiary, addEntry, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite } from './diary.js';
+import { load as loadDiary, save as saveDiary, addEntry, addComment, autoComment, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
@@ -2521,6 +2521,16 @@ app.post('/api/diary/entry', async (req, res) => {
       date: req.body?.date,
       image: req.body?.image || null
     });
+
+    /* 他读一眼，留一句（只在你写的时候） */
+    if (e.who === 'me') {
+      const c = await autoComment(e);
+      if (c) {
+        e.comments = e.comments || [];
+        e.comments.push(c);
+      }
+    }
+
     await saveDiary(D);
     res.json({ entry: e, ...monthView(D, e.date.slice(0, 7)) });
   } catch (e) {
@@ -2536,6 +2546,21 @@ app.post('/api/diary/like', async (req, res) => {
     res.json({ entry: e });
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+/* 留言 */
+app.post('/api/diary/comment', async (req, res) => {
+  try {
+    const D = await loadDiary();
+    const e = addComment(D, req.body?.id, {
+      text: req.body?.text,
+      who: req.body?.who === 'ta' ? 'ta' : 'me'
+    });
+    await saveDiary(D);
+    res.json({ entry: e, ...monthView(D, e.date.slice(0, 7)) });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
