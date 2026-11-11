@@ -19,6 +19,7 @@ import { startCall, currentCall, callTurn, endCall } from './call.js';
 import { cmd as fishCmd, newState as fishNew } from './game/fishing.js';
 import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game/mono/engine.js';
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
+import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -1566,7 +1567,8 @@ async function maybePlayAlone() {
 
   await supabase.from('app_settings').upsert({ key: 'gamePlay', value: { lastAt: Date.now() }, updated_at: new Date().toISOString() });
 
-  const pick = Math.random() < 0.5 ? 'farm' : 'fishing';
+  const roll = Math.random();
+  const pick = roll < 0.34 ? 'farm' : roll < 0.67 ? 'fishing' : 'burger';
   let out = '';
 
   if (pick === 'farm') {
@@ -1580,10 +1582,28 @@ async function maybePlayAlone() {
       else out = farmCmd(F, 'status');
     }
     await saveFarm(F);
-  } else {
+  } else if (pick === 'fishing') {
     const S = await loadFishing();
     out = fishCmd(S, 'cast 3');
     await saveFishing(S);
+  } else {
+    const S = await loadBurger();
+    /* 简单的自动做单：按订单烤、叠、出餐 */
+    out = burgerCmd(S, 'status');
+    if (S.orders && S.orderIdx < S.orders.length) {
+      const o = S.orders[S.orderIdx];
+      if (o.protein) {
+        out = burgerCmd(S, 'grill ' + o.protein);
+        const target = { '牛肉饼:嫩': 2, '牛肉饼:正好': 3, '鸡肉饼:正好': 3, '煎蛋:流心': 2, '煎蛋:全熟': 3, '培根:软': 1, '培根:脆': 2 }[o.protein + ':' + o.doneness] || 3;
+        let guard = 0;
+        while (S.grill.A && S.grill.A.time < target && guard++ < 6) burgerCmd(S, 'wait');
+        if (S.grill.A) { burgerCmd(S, 'flip A'); burgerCmd(S, 'take A'); }
+      }
+      burgerCmd(S, 'build ' + o.required_layers.join(' '));
+      if (o.sauce) burgerCmd(S, 'sauce ' + o.sauce + ' ' + o.sauce_amount);
+      out = burgerCmd(S, 'serve');
+    }
+    await saveBurger(S);
   }
 
   return { game: pick, text: out.length > 400 ? out.slice(0, 400) + '…' : out };
@@ -2311,6 +2331,31 @@ app.post('/api/farm/cmd', async (req, res) => {
   const output = farmCmd(F, String(req.body?.line || 'status'));
   await saveFarm(F);
   res.json({ output, farm: farmInfo(F) });
+});
+
+
+/* 中午的汉堡店 */
+const BURGER_KEY = 'burger';
+
+async function loadBurger() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', BURGER_KEY).maybeSingle();
+  return data?.value || burgerNew();
+}
+
+async function saveBurger(S) {
+  await supabase.from('app_settings').upsert({ key: BURGER_KEY, value: S, updated_at: new Date().toISOString() });
+}
+
+app.get('/api/burger', async (req, res) => {
+  const S = await loadBurger();
+  res.json({ game: burgerInfo(S) });
+});
+
+app.post('/api/burger/cmd', async (req, res) => {
+  const S = await loadBurger();
+  const output = burgerCmd(S, String(req.body?.line || 'status'));
+  await saveBurger(S);
+  res.json({ output, game: burgerInfo(S) });
 });
 
 app.listen(PORT, () => {

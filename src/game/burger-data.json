@@ -1,0 +1,559 @@
+{
+ "DAY_ORDER_COUNT": {
+  "1": 5,
+  "2": 5,
+  "3": 6,
+  "4": 6,
+  "5": 7,
+  "6": 7,
+  "7": 8
+ },
+ "UNLOCKS": {
+  "1": [
+   "原味胚",
+   "牛肉饼",
+   "鸡肉饼",
+   "芝士",
+   "生菜",
+   "番茄",
+   "番茄酱"
+  ],
+  "2": [
+   "全麦胚",
+   "洋葱",
+   "酸黄瓜",
+   "蛋黄酱"
+  ],
+  "3": [
+   "培根",
+   "煎蛋"
+  ],
+  "4": [
+   "辣酱"
+  ],
+  "5": [
+   "双层汉堡",
+   "批量订单"
+  ],
+  "6": [
+   "隐藏菜单"
+  ],
+  "7": [
+   "唐九"
+  ],
+  "8": [
+   "探店主播",
+   "城市事件"
+  ],
+  "9": [
+   "竞争店"
+  ],
+  "10": [
+   "市场监管",
+   "熟客剧情"
+  ],
+  "11": [
+   "外卖爆单"
+  ],
+  "12": [
+   "店铺性格"
+  ],
+  "13": [
+   "节日活动"
+  ],
+  "14": [
+   "高难午高峰"
+  ]
+ },
+ "RENOVATIONS": {
+  "窗边花架": {
+   "cost": 80,
+   "desc": "所有顾客耐心+1"
+  },
+  "暖色吊灯": {
+   "cost": 120,
+   "desc": "每日结算声誉额外+1"
+  },
+  "招牌照片墙": {
+   "cost": 140,
+   "desc": "摆放分最低保底8分"
+  },
+  "加宽操作台": {
+   "cost": 150,
+   "desc": "组装不消耗回合"
+  },
+  "自动酱料机": {
+   "cost": 160,
+   "desc": "加酱不消耗回合"
+  },
+  "高级烤台": {
+   "cost": 180,
+   "desc": "烤位增加到3个"
+  },
+  "舒适候餐区": {
+   "cost": 220,
+   "desc": "所有顾客耐心再+2"
+  },
+  "霓虹招牌": {
+   "cost": 260,
+   "desc": "每单基础售价+2金币"
+  }
+ },
+ "CUSTOMERS": [
+  {
+   "name": "林野",
+   "patience": 7,
+   "focus": "speed",
+   "likes": [
+    "牛肉饼",
+    "芝士"
+   ],
+   "dislikes": [
+    "洋葱"
+   ],
+   "tip": 1.1
+  },
+  {
+   "name": "米娜",
+   "patience": 10,
+   "focus": "plating",
+   "likes": [
+    "番茄",
+    "芝士"
+   ],
+   "dislikes": [],
+   "tip": 1.1
+  },
+  {
+   "name": "阿栗",
+   "patience": 12,
+   "focus": "innovation",
+   "likes": [
+    "鸡肉饼",
+    "辣酱",
+    "酸黄瓜"
+   ],
+   "dislikes": [],
+   "tip": 1.0
+  },
+  {
+   "name": "周姨",
+   "patience": 11,
+   "focus": "accuracy",
+   "likes": [
+    "鸡肉饼",
+    "生菜",
+    "番茄"
+   ],
+   "dislikes": [
+    "培根",
+    "辣酱"
+   ],
+   "tip": 1.0
+  },
+  {
+   "name": "沈昼",
+   "patience": 10,
+   "focus": "portion",
+   "likes": [
+    "牛肉饼",
+    "煎蛋",
+    "芝士"
+   ],
+   "dislikes": [],
+   "tip": 1.2
+  },
+  {
+   "name": "诺亚",
+   "patience": 10,
+   "focus": "plating",
+   "likes": [
+    "全麦胚",
+    "鸡肉饼",
+    "生菜"
+   ],
+   "dislikes": [
+    "蛋黄酱"
+   ],
+   "tip": 1.0
+  },
+  {
+   "name": "蓁蓁",
+   "patience": 8,
+   "focus": "accuracy",
+   "likes": [
+    "鸡肉饼",
+    "煎蛋",
+    "生菜"
+   ],
+   "dislikes": [
+    "培根",
+    "蛋黄酱"
+   ],
+   "tip": 1.0
+  },
+  {
+   "name": "老曹",
+   "patience": 9,
+   "focus": "fire",
+   "likes": [
+    "牛肉饼"
+   ],
+   "dislikes": [],
+   "tip": 1.1
+  },
+  {
+   "name": "苏弥",
+   "patience": 12,
+   "focus": "accuracy",
+   "likes": [
+    "芝士",
+    "番茄酱"
+   ],
+   "dislikes": [
+    "洋葱"
+   ],
+   "tip": 1.0
+  },
+  {
+   "name": "罗宾",
+   "patience": 6,
+   "focus": "speed",
+   "likes": [],
+   "dislikes": [],
+   "tip": 1.0
+  },
+  {
+   "name": "伊芙",
+   "patience": 11,
+   "focus": "accuracy",
+   "likes": [
+    "全麦胚",
+    "生菜",
+    "番茄",
+    "洋葱",
+    "煎蛋"
+   ],
+   "dislikes": [
+    "牛肉饼",
+    "鸡肉饼",
+    "培根"
+   ],
+   "tip": 1.0
+  },
+  {
+   "name": "唐九",
+   "patience": 9,
+   "focus": "mystery",
+   "likes": [],
+   "dislikes": [],
+   "tip": 1.3
+  },
+  {
+   "name": "小满",
+   "patience": 8,
+   "focus": "speed",
+   "likes": [
+    "鸡肉饼",
+    "生菜",
+    "番茄酱"
+   ],
+   "dislikes": [
+    "辣酱"
+   ],
+   "tip": 1.0,
+   "unlock_day": 2,
+   "archetype": "学生"
+  },
+  {
+   "name": "程白",
+   "patience": 7,
+   "focus": "speed",
+   "likes": [
+    "牛肉饼",
+    "芝士",
+    "咖啡"
+   ],
+   "dislikes": [
+    "洋葱"
+   ],
+   "tip": 1.1,
+   "unlock_day": 3,
+   "archetype": "上班族"
+  },
+  {
+   "name": "岑夏",
+   "patience": 11,
+   "focus": "plating",
+   "likes": [
+    "全麦胚",
+    "生菜",
+    "番茄",
+    "煎蛋"
+   ],
+   "dislikes": [
+    "培根"
+   ],
+   "tip": 1.1,
+   "unlock_day": 4,
+   "archetype": "健身客"
+  },
+  {
+   "name": "许柚",
+   "patience": 10,
+   "focus": "innovation",
+   "likes": [
+    "酸黄瓜",
+    "辣酱",
+    "芝士"
+   ],
+   "dislikes": [],
+   "tip": 1.0,
+   "unlock_day": 5,
+   "archetype": "情侣"
+  },
+  {
+   "name": "闻川",
+   "patience": 9,
+   "focus": "fire",
+   "likes": [
+    "培根",
+    "牛肉饼"
+   ],
+   "dislikes": [
+    "番茄酱"
+   ],
+   "tip": 1.2,
+   "unlock_day": 6,
+   "archetype": "熟客"
+  },
+  {
+   "name": "宁枝",
+   "patience": 12,
+   "focus": "accuracy",
+   "likes": [
+    "全麦胚",
+    "生菜",
+    "番茄",
+    "洋葱"
+   ],
+   "dislikes": [
+    "牛肉饼",
+    "培根"
+   ],
+   "tip": 1.0,
+   "unlock_day": 7,
+   "archetype": "素食客"
+  },
+  {
+   "name": "小鹿",
+   "patience": 8,
+   "focus": "innovation",
+   "likes": [
+    "辣酱",
+    "芝士",
+    "酸黄瓜"
+   ],
+   "dislikes": [],
+   "tip": 1.4,
+   "unlock_day": 8,
+   "archetype": "探店主播",
+   "event_only": "探店主播"
+  },
+  {
+   "name": "段老板",
+   "patience": 9,
+   "focus": "profit",
+   "likes": [
+    "牛肉饼",
+    "培根",
+    "芝士"
+   ],
+   "dislikes": [],
+   "tip": 1.0,
+   "unlock_day": 9,
+   "archetype": "竞争店老板"
+  },
+  {
+   "name": "唐小刀",
+   "patience": 6,
+   "focus": "speed",
+   "likes": [
+    "鸡肉饼",
+    "辣酱"
+   ],
+   "dislikes": [
+    "生菜"
+   ],
+   "tip": 1.0,
+   "unlock_day": 10,
+   "archetype": "急性子熟客"
+  }
+ ],
+ "ALIASES": {
+  "bun": "原味胚",
+  "原味胚": "原味胚",
+  "whole": "全麦胚",
+  "全麦胚": "全麦胚",
+  "beef": "牛肉饼",
+  "牛肉饼": "牛肉饼",
+  "chicken": "鸡肉饼",
+  "鸡肉饼": "鸡肉饼",
+  "bacon": "培根",
+  "培根": "培根",
+  "egg": "煎蛋",
+  "煎蛋": "煎蛋",
+  "cheese": "芝士",
+  "芝士": "芝士",
+  "lettuce": "生菜",
+  "生菜": "生菜",
+  "tomato": "番茄",
+  "番茄": "番茄",
+  "onion": "洋葱",
+  "洋葱": "洋葱",
+  "pickle": "酸黄瓜",
+  "酸黄瓜": "酸黄瓜",
+  "ketchup": "番茄酱",
+  "番茄酱": "番茄酱",
+  "mayo": "蛋黄酱",
+  "蛋黄酱": "蛋黄酱",
+  "chili": "辣酱",
+  "辣酱": "辣酱"
+ },
+ "AMOUNTS": {
+  "light": "少量",
+  "少量": "少量",
+  "normal": "正常",
+  "正常": "正常",
+  "heavy": "过量",
+  "过量": "过量"
+ },
+ "DIFFICULTIES": {
+  "普通": {
+   "label": "普通",
+   "patience": 0,
+   "orders": 0,
+   "fixed": 0,
+   "score": 0,
+   "s_threshold": 92,
+   "desc": "适合看剧情与轻经营。"
+  },
+  "忙碌": {
+   "label": "忙碌",
+   "patience": -1,
+   "orders": 1,
+   "fixed": 8,
+   "score": 2,
+   "s_threshold": 94,
+   "desc": "更容易超时，成本更高，适合正常挑战。"
+  },
+  "地狱午高峰": {
+   "label": "地狱午高峰",
+   "patience": -2,
+   "orders": 2,
+   "fixed": 18,
+   "score": 4,
+   "s_threshold": 96,
+   "desc": "爆单、成本、评分压力全部提高。小 G 可以来这里受苦。"
+  }
+ },
+ "GOALS": [
+  "均衡经营",
+  "速度优先",
+  "精致摆盘",
+  "顾客至上",
+  "利润冲刺"
+ ],
+ "CITY_EVENTS": [
+  {
+   "key": "午高峰爆单",
+   "min_day": 3,
+   "weight": 14,
+   "orders": 2,
+   "patience": -1,
+   "fixed": 0,
+   "desc": "附近写字楼午休提前，队伍一下排到门口。今日订单+2，顾客耐心-1。"
+  },
+  {
+   "key": "暴雨外卖",
+   "min_day": 4,
+   "weight": 10,
+   "orders": 1,
+   "patience": -1,
+   "fixed": 3,
+   "desc": "暴雨把堂食客赶走，也把外卖单推了上来。今日订单+1，速度压力上升。"
+  },
+  {
+   "key": "考试周",
+   "min_day": 5,
+   "weight": 9,
+   "orders": 1,
+   "patience": 0,
+   "fixed": 0,
+   "desc": "学生们靠汉堡和可乐续命，便宜、快、稳定最重要。"
+  },
+  {
+   "key": "食材涨价",
+   "min_day": 5,
+   "weight": 9,
+   "orders": 0,
+   "patience": 0,
+   "fixed": 18,
+   "desc": "牛肉和面包胚涨价，今日固定成本额外上升。"
+  },
+  {
+   "key": "探店主播",
+   "min_day": 8,
+   "weight": 8,
+   "orders": 1,
+   "patience": -1,
+   "fixed": 0,
+   "desc": "小有名气的探店主播小鹿听说店里有隐藏菜单，可能会来。"
+  },
+  {
+   "key": "竞争店促销",
+   "min_day": 9,
+   "weight": 8,
+   "orders": 0,
+   "patience": 0,
+   "fixed": 5,
+   "desc": "街角新店打折抢客，今天更需要口碑和稳定发挥。"
+  },
+  {
+   "key": "市场监管",
+   "min_day": 10,
+   "weight": 6,
+   "orders": 0,
+   "patience": 0,
+   "fixed": 6,
+   "desc": "市场监管抽查，低分会带来额外声誉惩罚。"
+  },
+  {
+   "key": "熟客带朋友",
+   "min_day": 10,
+   "weight": 10,
+   "orders": 1,
+   "patience": 0,
+   "fixed": 0,
+   "desc": "熟客带朋友来试吃，今日更容易触发人物反馈。"
+  },
+  {
+   "key": "隐藏菜单传闻",
+   "min_day": 11,
+   "weight": 8,
+   "orders": 1,
+   "patience": -1,
+   "fixed": 0,
+   "desc": "有人在附近传这家店有不写在菜单上的东西。创新单更多。"
+  },
+  {
+   "key": "小偷摸饮料",
+   "min_day": 12,
+   "weight": 4,
+   "orders": 0,
+   "patience": 0,
+   "fixed": 10,
+   "desc": "有人顺手拿走了冷柜饮料。损失不大，但会增加一点经营压力。"
+  }
+ ]
+}
