@@ -382,5 +382,26 @@ export async function booksPromptBlock() {
   const list = await readMeta();
   if (!list.length) return '';
   const latest = list[0];
-  return `\n\n【书架】他在读《${latest.title}》${latest.author ? '（' + latest.author + '）' : ''}，读到第 ${(latest.progress?.chapter || 0) + 1}/${latest.chapters} 章。可以聊到读书进度，但别催他。`;
+
+  const chapterNo = (latest.progress?.chapter || 0) + 1;
+  const lines = [
+    `他在读《${latest.title}》${latest.author ? '（' + latest.author + '）' : ''}，读到第 ${chapterNo}/${latest.chapters} 章。`
+  ];
+
+  try {
+    const marks = await readMarks(latest.id);
+    const recent = (marks.annotations || []).slice(0, 4);
+    if (recent.length) {
+      lines.push('他最近在这本书里做过这些批注：');
+      for (const a of recent) {
+        const ch = (a.chapter || 0) + 1;
+        lines.push(`- 第 ${ch} 章｜选中「${a.quote || ''}」${a.note ? '，写下：' + a.note : ''}`);
+      }
+      lines.push('你可以顺着这些批注聊，但别一条条点评，也别问"你为什么这么写"。');
+    }
+  } catch {
+    /* 没批注就算了 */
+  }
+
+  return '\n\n【书架】\n' + lines.join('\n');
 }
