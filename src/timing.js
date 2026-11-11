@@ -118,7 +118,7 @@ export function decide({
   allowNight = true,
   ignoreSuitability = true,
   hoursSinceSpoke = 0,
-  forceAfterHours = 4
+  forceAfterHours = 0
 }) {
   const inferred = inferState({ hour, device, minutesSinceUser, unanswered });
   const p = desire({ minutes: minutesSinceCheck, misses, rate });
@@ -144,9 +144,15 @@ export function decide({
     }
   }
 
-  /* 太久没说话了：不管掷没掷中，都来找一下 */
-  if (hoursSinceSpoke >= forceAfterHours) {
-    return { send: true, reason: `${Math.round(hoursSinceSpoke)} 小时没说话了，来找你`, detail };
+  /* 太久没说话了：不管掷没掷中，都来找一下。
+     门槛本身是随机的（4–6 小时），免得每次都是同一个点，太像定时器 */
+  const threshold = forceAfterHours || 4 + Math.random() * 2;
+  if (hoursSinceSpoke >= threshold) {
+    return {
+      send: true,
+      reason: `${hoursSinceSpoke.toFixed(1)} 小时没说话了（门槛 ${threshold.toFixed(1)}h），来找你`,
+      detail
+    };
   }
 
   /* 泊松没掷中 */
