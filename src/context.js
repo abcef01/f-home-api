@@ -231,6 +231,9 @@ export async function weatherPromptBlock() {
 }
 
 /* 它在哪：只用来让对话有地方感，不追踪 */
+/* 它想知道你在哪（一条只触发一次请求的标记） */
+export const WHERE_RULE = `\n\n如果你确实想知道对方此刻在哪（不是客气，是真的想知道），另起一段只写 [[where]]，系统会去取一次他的位置。这个不要常用。`;
+
 export async function placePromptBlock() {
   const loc = await getLocation();
   if (!loc) return '';
@@ -242,5 +245,11 @@ export async function placePromptBlock() {
   if (loc.city && loc.city !== loc.district) parts.push(loc.city);
   if (!parts.length) return '';
 
-  return `\n\n【他现在在】${parts.join('，')}。\n这是最近一次定位的结果，可能已经变了。只有当他说到自己在哪、或者话题自然相关时才提，不要追问他在哪。`;
+  const mins = Math.round((Date.now() - (loc.at || 0)) / 60000);
+  const ago = mins < 5 ? '刚刚' : mins < 60 ? `${mins} 分钟前` : `${Math.round(mins / 60)} 小时前`;
+  const stale = mins > 120;
+
+  return `\n\n【他最后一次被定位到】${parts.join('，')}（${ago}）。${
+    stale ? '已经有一段时间了，他可能不在那儿——合适的时候可以问一句，不要直接断定。' : ''
+  }\n只有当他说到自己在哪、或者话题自然相关时才提，不要没话找话。`;
 }

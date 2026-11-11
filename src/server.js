@@ -16,7 +16,7 @@ import { decide as timingDecide } from './timing.js';
 import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { startCall, currentCall, callTurn, endCall } from './call.js';
-import { timePromptBlock, weatherPromptBlock, placePromptBlock, getLocation, setLocation, getWeather } from './context.js';
+import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -1091,6 +1091,7 @@ app.post('/api/chat', async (req, res) => {
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
       (await placePromptBlock()) +
+      WHERE_RULE +
       COT_FORMAT +
       (await drivesPromptBlock());
 
@@ -1159,6 +1160,9 @@ app.post('/api/chat', async (req, res) => {
     const parsed = extractSticker(withWatch.content, stickerList);
     /* 它想打电话 */
     const wantsCall = /\[\[call\]\]/.test(parsed.content || '');
+    /* 它想知道你在哪 */
+    const wantsWhere = /\[\[where\]\]/.test(parsed.content || '');
+    if (wantsWhere) parsed.content = parsed.content.replace(/\[\[where\]\]/g, '').trim();
     if (wantsCall) parsed.content = parsed.content.replace(/\[\[call\]\]/g, '').trim();
     /* 剥出思考，正文照常分气泡 */
     const { thought, content: bodyText } = extractThought(parsed.content);
@@ -1178,6 +1182,7 @@ app.post('/api/chat', async (req, res) => {
         ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
         ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
         ...(i === 0 && wantsCall ? { callRequest: true } : {}),
+        ...(i === 0 && wantsWhere ? { wantWhere: true } : {}),
         ...(pieces.length > 1 ? { part: i + 1, of: pieces.length } : {}),
         ...(i === 0 && thought ? { thought } : {})
       }
