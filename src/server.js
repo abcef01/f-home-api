@@ -1807,7 +1807,11 @@ app.post('/api/call/turn', async (req, res) => {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: '说了什么？' });
     const params = await getChatParams();
-    const ctx = (await statePromptBlock()) + (await devicePromptBlock()) + (await drivesPromptBlock());
+    const ctx =
+      (await statePromptBlock()) +
+      (await devicePromptBlock()) +
+      (await drivesPromptBlock()) +
+      (await tonePromptBlock(req.body?.tone));
     const r = await callTurn({ text, systemBase: params.systemPrompt + ctx, farewell: req.body?.farewell === true });
     res.json(r);
   } catch (e) {
@@ -1861,6 +1865,60 @@ async function maybeCallInvite(state) {
   });
   await notifyAll({ title: 'Elliott', body: '想给你打个电话', url: '/#call' }).catch(() => {});
   return true;
+}
+
+/* ============================================================
+   语气（借鉴 ears / ace-ears / seven-ears）
+   ------------------------------------------------------------
+   不比绝对值，比「跟他自己平时比」。
+   存一条滑动基线，这次说的和基线差多少，才是信息。
+   ============================================================ */
+const TONE_KEY = 'toneBase';
+
+async function toneBaseline() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', TONE_KEY).maybeSingle();
+  return data?.value || null;
+}
+
+async function updateToneBaseline(tone) {
+  const base = await toneBaseline();
+  const a = 0.15; // 慢速学习，别让一次激动改掉基线
+  const next = base
+    ? {
+        volume: base.volume * (1 - a) + tone.volume * a,
+        pitch: base.pitch * (1 - a) + tone.pitch * a,
+        pitchVar: base.pitchVar * (1 - a) + tone.pitchVar * a,
+        n: (base.n || 1) + 1
+      }
+    : { volume: tone.volume, pitch: tone.pitch, pitchVar: tone.pitchVar, n: 1 };
+
+  await supabase.from('app_settings').upsert({ key: TONE_KEY, value: next, updated_at: new Date().toISOString() });
+  return base;
+}
+
+/* 这次说话跟平时比怎么样，翻译成一句人话 */
+async function tonePromptBlock(tone) {
+  if (!tone || typeof tone.volume !== 'number') return '';
+  const base = await updateToneBaseline(tone);
+  if (!base || (base.n || 0) < 5) return ''; // 样本太少，先不判断
+
+  const cues = [];
+  const dVol = (tone.volume - base.volume) / (base.volume || 1);
+  if (dVol < -0.28) cues.push('声音比平时小');
+  if (dVol > 0.35) cues.push('声音比平时大');
+
+  if (base.pitch > 0 && tone.pitch > 0) {
+    const dPitch = (tone.pitch - base.pitch) / base.pitch;
+    if (dPitch > 0.12) cues.push('音调比平时高');
+    if (dPitch < -0.12) cues.push('音调比平时低');
+  }
+
+  if (tone.pitchVar < base.pitchVar * 0.6) cues.push('语气比平时平，没什么起伏');
+
+  if (tone.pauses >= 3 && tone.pauseMs > 2500) cues.push('说话中间停顿比平时多');
+
+  if (!cues.length) return '';
+  return `\n\n【听出来的语气】他这次说话${cues.join('，')}。只当参考，不要直接点破，也别当成诊断。`;
 }
 
 app.listen(PORT, () => {
