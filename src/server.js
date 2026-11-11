@@ -21,6 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
+import { drawSpread, spreadPrompt, oracleInfo } from './game/oracle.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -1118,6 +1119,9 @@ app.post('/api/chat', async (req, res) => {
     const trimmed = recent.slice(-params.contextRounds * 2);
 
 
+    const spreadNow = await loadOracle().catch(() => null);
+    const oracleBlock = spreadNow && Date.now() - (spreadNow.at || 0) < 10 * 60 * 1000 ? spreadPrompt(spreadNow) : '';
+
     const stickerList = await readStickers().catch(() => []);
 
     const base = memoryBlock
@@ -1155,6 +1159,7 @@ app.post('/api/chat', async (req, res) => {
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
+      oracleBlock +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
       (await placePromptBlock()) +
@@ -1270,8 +1275,23 @@ app.post('/api/chat', async (req, res) => {
     /* 剥出思考，正文照常分气泡 */
     const { thought, content: bodyText } = extractThought(parsed.content);
 
-    /* 只剩思考没有正文时，把独白压成一句说出口的话 */
+    /* 只剩思考没有正文：先强硬重试一次，再退回压缩独白 */
     let spoken = bodyText;
+    if (!spoken) {
+      try {
+        const retry = await callModel({
+          target: CHANNELS.includes(conf.channel) ? conf.channel : 'chat',
+          model: conf.model,
+          system: system + '\n\n现在直接说你要说的话。不要写 [[思考]]，不要写任何标记，第一句就是你对他说的话。',
+          messages: msgs,
+          temperature: params.temperature,
+          maxTokens: 800
+        });
+        spoken = (retry.content || '').replace(/\[\[思考：[\s\S]*?\]\]/g, '').trim();
+      } catch {
+        spoken = '';
+      }
+    }
     if (!spoken && thought) {
       try {
         const short = await callModel({
@@ -2392,6 +2412,26 @@ app.post('/api/pond/cmd', async (req, res) => {
   const output = pondCmd(S, String(req.body?.line || 'status'));
   await savePond(S);
   res.json({ output, pond: pondInfo(S) });
+});
+
+
+/* 命运牌阵：抽一个场景，故事由他讲 */
+const ORACLE_KEY = 'oracle';
+
+async function loadOracle() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', ORACLE_KEY).maybeSingle();
+  return data?.value || null;
+}
+
+app.get('/api/oracle', async (req, res) => {
+  res.json({ spread: oracleInfo(await loadOracle()) });
+});
+
+app.post('/api/oracle/draw', async (req, res) => {
+  const nsfw = req.body?.nsfw === true;
+  const spread = drawSpread({ seed: Date.now() >>> 0, nsfw });
+  await supabase.from('app_settings').upsert({ key: ORACLE_KEY, value: spread, updated_at: new Date().toISOString() });
+  res.json({ spread: oracleInfo(spread) });
 });
 
 app.listen(PORT, () => {
