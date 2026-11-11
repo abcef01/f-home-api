@@ -115,31 +115,31 @@ export function decide({
   unanswered = 0,
   misses = 0,
   rate = 0.16,
-  allowNight = true
+  allowNight = true,
+  ignoreSuitability = false
 }) {
   const inferred = inferState({ hour, device, minutesSinceUser, unanswered });
   const p = desire({ minutes: minutesSinceCheck, misses, rate });
 
   const detail = { ...inferred, desire: Number(p.toFixed(2)), unanswered };
 
-  /* 睡着了：除了「催睡」那条独立逻辑，不打扰 */
-  if (inferred.state === 'sleeping') {
-    return { send: false, reason: '对方在睡觉', detail };
-  }
+  /* 关掉「合不合适」判断后，只保留泊松掷骰 */
+  if (!ignoreSuitability) {
+    if (inferred.state === 'sleeping') {
+      return { send: false, reason: '对方在睡觉', detail };
+    }
 
-  /* 深夜并且不允许夜间消息 */
-  if (!allowNight && (hour >= 23 || hour < 6)) {
-    return { send: false, reason: '夜间静默', detail };
-  }
+    if (!allowNight && (hour >= 23 || hour < 6)) {
+      return { send: false, reason: '夜间静默', detail };
+    }
 
-  /* 连发两条没回音，信息增益太低 */
-  if (unanswered >= 2 && inferred.state !== 'care') {
-    return { send: false, reason: '前面还有没回的消息', detail };
-  }
+    if (unanswered >= 2 && inferred.state !== 'care') {
+      return { send: false, reason: '前面还有没回的消息', detail };
+    }
 
-  /* 打扰效用不够 */
-  if (inferred.utility < 0.5 && inferred.state !== 'care') {
-    return { send: false, reason: `现在不太合适（${inferred.label}）`, detail };
+    if (inferred.utility < 0.5 && inferred.state !== 'care') {
+      return { send: false, reason: `现在不太合适（${inferred.label}）`, detail };
+    }
   }
 
   /* 泊松没掷中 */

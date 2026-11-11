@@ -1548,7 +1548,9 @@ async function timingGate() {
       minutesSinceCheck,
       unanswered,
       misses: st.misses || 0,
-      allowNight: false
+      allowNight: false,
+      /* 你要求关掉「合不合适」判断：只留泊松掷骰 */
+      ignoreSuitability: true
     });
 
     await supabase.from('app_settings').upsert({
