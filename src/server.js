@@ -21,6 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
+import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
@@ -1176,6 +1177,7 @@ app.post('/api/chat', async (req, res) => {
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
       (await questsPromptBlock()) +
+      (await booksPromptBlock()) +
       (await diaryPromptBlock()) +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
@@ -2581,6 +2583,98 @@ app.post('/api/diary/autowrite', async (req, res) => {
   const D = await loadDiary();
   await saveDiary(D);
   res.json({ entry: e });
+});
+
+
+/* ============================================================
+   书架：TXT / EPUB
+   ============================================================ */
+app.get('/api/books', async (req, res) => {
+  res.json({ books: await listBooks() });
+});
+
+app.post('/api/books/upload', async (req, res) => {
+  try {
+    const meta = await importBook({ filename: req.body?.filename, base64: req.body?.base64 });
+    res.json({ book: meta, books: await listBooks() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/books/:id', async (req, res) => {
+  try {
+    const book = await loadBook(req.params.id);
+    res.json({
+      id: book.id,
+      title: book.title,
+      author: book.author,
+      chapters: book.chapters.map((c, i) => ({ i, title: c.title, chars: c.text.length })),
+      /* 进度以书架那份为准（导入时的快照是旧的）*/
+      progress: (await listBooks()).find((x) => x.id === book.id)?.progress || book.progress || { chapter: 0, page: 0 }
+    });
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+app.get('/api/books/:id/chapter/:index', async (req, res) => {
+  try {
+    res.json(await getChapter(req.params.id, req.params.index));
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+app.post('/api/books/:id/progress', async (req, res) => {
+  try {
+    res.json({
+      book: await saveProgress(req.params.id, {
+        chapter: req.body?.chapter,
+        page: req.body?.page,
+        percent: req.body?.percent
+      })
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/* 批注与书签 */
+app.get('/api/books/:id/marks', async (req, res) => {
+  res.json(await getMarks(req.params.id));
+});
+
+app.post('/api/books/:id/annotation', async (req, res) => {
+  try {
+    const a = await addAnnotation(req.params.id, req.body || {});
+    res.json({ annotation: a, ...(await getMarks(req.params.id)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/books/:id/annotation/:aid', async (req, res) => {
+  await removeAnnotation(req.params.id, req.params.aid);
+  res.json(await getMarks(req.params.id));
+});
+
+app.post('/api/books/:id/bookmark', async (req, res) => {
+  try {
+    const b = await addBookmark(req.params.id, req.body || {});
+    res.json({ bookmark: b, ...(await getMarks(req.params.id)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/books/:id/bookmark/:bid', async (req, res) => {
+  await removeBookmark(req.params.id, req.params.bid);
+  res.json(await getMarks(req.params.id));
+});
+
+app.delete('/api/books/:id', async (req, res) => {
+  res.json(await removeBook(req.params.id));
 });
 
 app.listen(PORT, () => {
