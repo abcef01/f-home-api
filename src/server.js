@@ -21,7 +21,6 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
-import { drawSpread, spreadPrompt, oracleInfo } from './game/oracle.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -1119,8 +1118,6 @@ app.post('/api/chat', async (req, res) => {
     const trimmed = recent.slice(-params.contextRounds * 2);
 
 
-    const spreadNow = await loadOracle().catch(() => null);
-    const oracleBlock = spreadNow && Date.now() - (spreadNow.at || 0) < 10 * 60 * 1000 ? spreadPrompt(spreadNow) : '';
 
     const stickerList = await readStickers().catch(() => []);
 
@@ -1159,7 +1156,6 @@ app.post('/api/chat', async (req, res) => {
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
-      oracleBlock +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
       (await placePromptBlock()) +
@@ -2412,26 +2408,6 @@ app.post('/api/pond/cmd', async (req, res) => {
   const output = pondCmd(S, String(req.body?.line || 'status'));
   await savePond(S);
   res.json({ output, pond: pondInfo(S) });
-});
-
-
-/* 命运牌阵：抽一个场景，故事由他讲 */
-const ORACLE_KEY = 'oracle';
-
-async function loadOracle() {
-  const { data } = await supabase.from('app_settings').select('value').eq('key', ORACLE_KEY).maybeSingle();
-  return data?.value || null;
-}
-
-app.get('/api/oracle', async (req, res) => {
-  res.json({ spread: oracleInfo(await loadOracle()) });
-});
-
-app.post('/api/oracle/draw', async (req, res) => {
-  const nsfw = req.body?.nsfw === true;
-  const spread = drawSpread({ seed: Date.now() >>> 0, nsfw });
-  await supabase.from('app_settings').upsert({ key: ORACLE_KEY, value: spread, updated_at: new Date().toISOString() });
-  res.json({ spread: oracleInfo(spread) });
 });
 
 app.listen(PORT, () => {
