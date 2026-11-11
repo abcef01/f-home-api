@@ -2095,9 +2095,11 @@ function detectStimulus(text) {
   const angry = ['你根本', '烦死', '闭嘴', '滚', '有病', '不想理你', '失望', '你从来', '算了'];
   const cold = ['嗯', '哦', '随便', '都行', '没事'];
   const warm = ['想你', '抱抱', '喜欢你', '谢谢', '晚安', '爱你', '亲'];
+  const sore = ['好累', '累死', '难受', '头疼', '肚子疼', '不舒服', '失眠', '睡不着', '发烧', '感冒', '加班到', '被骂', '哭'];
   const praise = ['你好厉害', '真棒', '厉害呀', '好看'];
 
   if (angry.some((w) => t.includes(w))) return 'angry';
+  if (sore.some((w) => t.includes(w))) return 'sore';
   if (praise.some((w) => t.includes(w))) return 'praise';
   if (warm.some((w) => t.includes(w))) return 'warm';
   if (t.length <= 3 && cold.some((w) => t.includes(w))) return 'cold';

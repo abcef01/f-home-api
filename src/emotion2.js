@@ -20,7 +20,9 @@ const SPEC = {
   valence: { home: 0.30, rate: 0.02, cap: 1, cn: '高兴' },
   arousal: { home: 0.10, rate: 0.08, cap: 1, cn: '火气' },
   immersion: { home: 0.20, rate: 0.05, cap: 1, cn: '沉浸' },
-  grievance: { home: 0.08, rate: 0.008, cap: 0.4, cn: '委屈' }
+  grievance: { home: 0.08, rate: 0.008, cap: 0.4, cn: '委屈' },
+  hurt: { home: 0.05, rate: 0.02, cap: 0.5, cn: '伤心' },
+  tender: { home: 0.15, rate: 0.03, cap: 1, cn: '心疼' }
 };
 
 const AXES = Object.keys(SPEC);
@@ -86,12 +88,13 @@ export async function stimulateDrives({ kind, strength = 1 }) {
   const s = await load();
   const now = Date.now();
   const deltas = {
-    angry: { arousal: 0.18, grievance: 0.12, valence: -0.12 },
-    cold: { grievance: 0.1, arousal: 0.05, valence: -0.06 },
-    warm: { valence: 0.16, connection: 0.08 },
+    angry: { arousal: 0.18, grievance: 0.12, valence: -0.12, hurt: 0.1 },
+    cold: { grievance: 0.1, arousal: 0.05, valence: -0.06, hurt: 0.05 },
+    warm: { valence: 0.16, connection: 0.08, tender: 0.06 },
     praise: { pride: 0.16, valence: 0.12 },
-    share: { immersion: 0.14, connection: 0.06 },
-    neglect: { connection: 0.1, grievance: 0.03 }
+    share: { immersion: 0.14, connection: 0.06, tender: 0.04 },
+    neglect: { connection: 0.1, grievance: 0.03, hurt: 0.02 },
+    sore: { tender: 0.2, connection: 0.06, valence: -0.04 }
   }[kind];
 
   if (!deltas) return s;
