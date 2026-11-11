@@ -21,6 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
+import { load as loadDiary, save as saveDiary, addEntry, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
@@ -731,6 +732,16 @@ app.get('/api/heartbeat', async (req, res) => {
       if (invited) console.log('[call] 主动拨号');
 
       /* 他可能自己跑去玩一会儿，回来留一句 */
+      /* 偶尔在手帐上写一页 */
+      if (Math.random() < 0.18) {
+        const wrote = await diaryAutowrite().catch(() => null);
+        if (wrote) {
+          const D2 = await loadDiary();
+          await saveDiary(D2);
+          console.log('[diary] 他写了一页');
+        }
+      }
+
       const played = await maybePlayAlone().catch(() => null);
       if (played && !spoke) {
         const { data: convRow } = await supabase
@@ -1161,6 +1172,7 @@ app.post('/api/chat', async (req, res) => {
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
       (await questsPromptBlock()) +
+      (await diaryPromptBlock()) +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
       (await placePromptBlock()) +
@@ -2489,6 +2501,51 @@ app.post('/api/quests/redeem', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+
+/* ============================================================
+   共同手帐
+   ============================================================ */
+app.get('/api/diary', async (req, res) => {
+  const D = await loadDiary();
+  res.json(monthView(D, req.query.month));
+});
+
+app.post('/api/diary/entry', async (req, res) => {
+  try {
+    const D = await loadDiary();
+    const e = addEntry(D, {
+      text: req.body?.text,
+      who: req.body?.who === 'ta' ? 'ta' : 'me',
+      date: req.body?.date,
+      image: req.body?.image || null
+    });
+    await saveDiary(D);
+    res.json({ entry: e, ...monthView(D, e.date.slice(0, 7)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/diary/like', async (req, res) => {
+  try {
+    const D = await loadDiary();
+    const e = toggleLike(D, req.body?.id, req.body?.who === 'ta' ? 'ta' : 'me');
+    await saveDiary(D);
+    res.json({ entry: e });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/* 让他写一页（也可以手动触发） */
+app.post('/api/diary/autowrite', async (req, res) => {
+  const e = await diaryAutowrite();
+  if (!e) return res.json({ skipped: true });
+  const D = await loadDiary();
+  await saveDiary(D);
+  res.json({ entry: e });
 });
 
 app.listen(PORT, () => {
