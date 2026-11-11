@@ -23,7 +23,7 @@ import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from '
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
-import { knowledgeBlock, checkIn, ritualsState } from './knowledge.js';
+import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
@@ -1436,6 +1436,42 @@ app.post('/api/chat', async (req, res) => {
     }
 
     const lastUserText = String(req.body?.message || '').trim() || history.filter((m) => m.role === 'user').slice(-1)[0]?.content || '';
+
+    /* 他想翻东西：[[查:手帐]] 这种，取回来再让他说一次 */
+    const lookMatch = String(parsed.content || '').match(/\[\[查[:：]\s*([^\]]{1,12})\]\]/);
+    if (lookMatch) {
+      const topic = lookMatch[1].trim();
+      const wantLook = (parsed.content || '').replace(lookMatch[0], '').trim();
+
+      try {
+        const detail = await fetchTopic(topic);
+        const second = await callModel({
+          system: system + '\n\n你刚刚翻了这些：\n' + detail,
+          messages: [
+            ...history.slice(-8).map((m) => ({ role: m.role, content: m.content })),
+            { role: 'user', content: (wantLook || lastUserText) + '\n（你已经查过了，现在直接说。）' }
+          ],
+          temperature: params.temperature,
+          maxTokens: 1200
+        });
+        const t2 = stripMarkers(second.content || '');
+        if (t2) {
+          const pieces2 = splitBubbles(t2);
+          const rows2b = pieces2.map((t, i) => ({
+            conversation_id: convId,
+            role: 'assistant',
+            content: t,
+            model: second.model,
+            tokens: i === 0 ? second.tokens : 0,
+            meta: { ...(i === 0 ? { usage: second.meta?.usage || null, looked: topic } : {}), part: i + 1, of: pieces2.length }
+          }));
+          const { data: saved2 } = await supabase.from('messages').insert(rows2b).select();
+          return res.json({ reply: saved2?.[0], replies: saved2 || [], looked: topic });
+        }
+      } catch (e) {
+        console.log('[look] 查失败：', e.message.slice(0, 80));
+      }
+    }
 
     /* 兜底：拿便宜模型直接说一句 */
     if (!spoken || !spoken.trim()) {
@@ -2867,6 +2903,24 @@ app.post('/api/rituals/check', async (req, res) => {
   try {
     const all = await checkIn(String(req.body?.id || '').slice(0, 20));
     res.json({ rituals: all });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+
+/* ============================================================
+   睡眠
+   ============================================================ */
+app.get('/api/sleep', async (req, res) => {
+  const all = await ritualsState();
+  res.json({ sleep: await sleepList(), guess: sleepFromRituals(all) });
+});
+
+app.post('/api/sleep', async (req, res) => {
+  try {
+    const list = await upsertSleep(req.body || {});
+    res.json({ sleep: list });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

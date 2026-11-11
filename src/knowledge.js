@@ -1,16 +1,19 @@
 /**
- * 他知道的事
+ * 他知道的事（按需版）
  * ------------------------------------------------------------
- * 他说"我什么都知道"的时候，得真的有东西可看。
+ * 以前是把所有东西塞进每次请求——贵，而且大部分时候用不上。
  *
- * 这里把散落各处的状态汇成一段话塞进提示词：
- *   头像长什么样、今天打卡了没、手帐最近写了什么、纸条、约定、
- *   在读的书和你的批注、界面设置、你在用什么设备。
+ * 现在：
+ *   · 常驻的只有一小段"索引"（几行字，告诉他有什么可看）
+ *   · 他真想知道，就单独发一行 [[查:手帐]] / [[查:睡眠]]
+ *   · 后端去取，追加一轮，再让他说
  *
- * 原则：宁可他看到的是残缺的真相，也不要他假装知道。
+ * 只有他主动翻的时候才花那份钱。
  */
 import { supabase, dbReady } from './db.js';
 import { callVision } from './llm.js';
+
+const dayKey = (d = new Date()) => d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
 async function readKey(key, fallback) {
   if (!dbReady) return fallback;
@@ -27,158 +30,219 @@ async function writeKey(key, value) {
   try {
     await supabase.from('app_settings').upsert({ key, value, updated_at: new Date().toISOString() });
   } catch {
-    /* 写不进去就算了 */
+    /* 忽略 */
   }
-}
-
-const dayKey = (d = new Date()) => d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-
-/* ============================================================
-   头像：他不看图，但可以让人先看一遍，把样子说给他听
-   ============================================================ */
-async function avatarLines() {
-  const avatars = (await readKey('avatars', {})) || {};
-  const descs = (await readKey('avatarDesc', {})) || {};
-  const out = [];
-
-  for (const who of ['me', 'ta']) {
-    const url = avatars[who];
-    if (!url) continue;
-
-    if (!descs[who]) {
-      try {
-        const r = await callVision({
-          system: '用两句话描述这张图：画面里是什么，什么颜色，什么气质。不要评价好坏，只描述。',
-          text: '这是他/她的头像。',
-          imageDataUrl: url,
-          maxTokens: 260
-        });
-        const t = String(r || '').trim();
-        if (t) {
-          descs[who] = t.slice(0, 200);
-          await writeKey('avatarDesc', descs);
-        }
-      } catch {
-        /* 描述失败就算了 */
-      }
-    }
-
-    const name = who === 'me' ? '他' : '你';
-    if (descs[who]) out.push(`- ${name}的头像：${descs[who]}`);
-    else out.push(`- ${name}的头像：换过一张，但画面我说不出来。`);
-  }
-
-  if (!avatars.me) out.push('- 他还没设头像。');
-  if (!avatars.ta) out.push('- 你自己也还没设头像。');
-  return out;
 }
 
 /* ============================================================
    打卡
    ============================================================ */
-export async function checkIn(id) {
-  const all = (await readKey('rituals', {})) || {};
-  const today = dayKey();
-  const day = all[today] || {};
-  day[id] = !day[id];
-  all[today] = day;
-
-  /* 只留最近 30 天 */
-  const keys = Object.keys(all).sort().slice(-30);
-  const trimmed = Object.fromEntries(keys.map((k) => [k, all[k]]));
-  await writeKey('rituals', trimmed);
-  return trimmed;
-}
+const RITUAL_NAMES = { morning: '早安', night: '晚安', water: '喝水', meal: '好好吃饭', move: '动一动' };
 
 export async function ritualsState() {
   return (await readKey('rituals', {})) || {};
 }
 
-const RITUAL_NAMES = { morning: '早安', night: '晚安', water: '喝水', meal: '好好吃饭', move: '动一动' };
+function ritualAt(v) {
+  if (!v || v === true) return null;
+  return v.at || null;
+}
+const isOn = (v) => !!(v === true || v?.done);
 
-function ritualLines(all) {
+export async function checkIn(id) {
+  const all = await ritualsState();
   const today = dayKey();
-  const done = Object.entries(all[today] || {}).filter(([, v]) => v).map(([k]) => RITUAL_NAMES[k] || k);
+  const day = all[today] || {};
+  const cur = day[id];
 
-  /* 连续打卡天数 */
-  let streak = 0;
-  const d = new Date();
-  for (let i = 0; i < 60; i++) {
-    const k = dayKey(d);
-    const has = Object.values(all[k] || {}).some(Boolean);
-    if (has) streak++;
-    else if (i > 0) break;
-    d.setDate(d.getDate() - 1);
-  }
+  if (isOn(cur)) delete day[id];
+  else day[id] = { done: true, at: Date.now() };
 
-  const lines = [];
-  lines.push(done.length ? `- 今天打卡：${done.join('、')}` : '- 今天还没打卡。');
-  if (streak > 1) lines.push(`- 已经连着打卡 ${streak} 天。`);
-  return lines;
+  all[today] = day;
+  const keys = Object.keys(all).sort().slice(-60);
+  const trimmed = Object.fromEntries(keys.map((k) => [k, all[k]]));
+  await writeKey('rituals', trimmed);
+  return trimmed;
 }
 
 /* ============================================================
-   汇总
+   睡眠
+   ============================================================ */
+export async function sleepList() {
+  return (await readKey('sleep', [])) || [];
+}
+
+export async function upsertSleep(entry) {
+  const list = await sleepList();
+  const date = String(entry.date || dayKey()).slice(0, 10);
+  const idx = list.findIndex((x) => x.date === date);
+  const item = {
+    date,
+    bedAt: entry.bedAt || null,
+    wakeAt: entry.wakeAt || null,
+    hours: entry.hours === null || entry.hours === undefined ? null : Number(entry.hours),
+    wakings: Number(entry.wakings) || 0,
+    note: String(entry.note || '').slice(0, 120),
+    at: Date.now()
+  };
+  if (idx >= 0) list[idx] = item;
+  else list.push(item);
+  list.sort((a, b) => (a.date < b.date ? -1 : 1));
+  await writeKey('sleep', list.slice(-90));
+  return list;
+}
+
+/* 从打卡推：昨晚晚安 → 今天早安 */
+export function sleepFromRituals(all, date = dayKey()) {
+  const d = new Date(date + 'T12:00:00');
+  d.setDate(d.getDate() - 1);
+  const prev = dayKey(d);
+
+  const nightAt = ritualAt(all[prev]?.night) || null;
+  const morningAt = ritualAt(all[date]?.morning) || null;
+  if (!nightAt || !morningAt) return null;
+
+  const hours = Math.round(((morningAt - nightAt) / 3600000) * 10) / 10;
+  if (hours <= 0 || hours > 20) return null;
+  return { bedAt: nightAt, wakeAt: morningAt, hours };
+}
+
+/* ============================================================
+   常驻索引（很短）
    ============================================================ */
 export async function knowledgeBlock() {
+  const avatars = (await readKey('avatars', {})) || {};
+  const all = await ritualsState();
+  const today = all[dayKey()] || {};
+  const done = Object.entries(today).filter(([, v]) => isOn(v)).map(([k]) => RITUAL_NAMES[k] || k);
+
   const lines = [];
+  lines.push(`- 头像：${avatars.me ? '他设了' : '他没设'} / ${avatars.ta ? '你设了' : '你没设'}`);
+  lines.push(done.length ? `- 今天的打卡：${done.join('、')}` : '- 今天他还没打卡');
 
-  /* 头像 */
-  try {
-    lines.push(...(await avatarLines()));
-  } catch {
-    /* 忽略 */
+  return `\n\n【他现在能看的】\n${lines.join('\n')}
+想细看就单独输出一行 [[查:手帐]]（或 纸条 / 打卡 / 睡眠 / 约定 / 书 / 头像 / 照片 / 界面）。
+查了你会拿到详细内容；不查就别装作知道。上面的索引里没有的事，就是你真的不知道。`;
+}
+
+/* ============================================================
+   按主题取详情
+   ============================================================ */
+export async function fetchTopic(topic) {
+  const t = String(topic || '').trim();
+
+  if (t === '手帐' || t === 'diary') {
+    const d = (await readKey('diary', null)) || {};
+    const entries = (d.entries || []).slice(-12);
+    if (!entries.length) return '手帐还是空的。';
+    return (
+      '【手帐最近 12 条】\n' +
+      entries
+        .map((e) => {
+          const cs = (e.comments || []).map((c) => `（${c.who === 'me' ? '他' : '你'}留：${c.text}）`).join('');
+          return `${e.date} ${e.who === 'me' ? '他' : '你'}：${e.text}${cs}`;
+        })
+        .join('\n')
+    );
   }
 
-  /* 打卡 */
-  lines.push(...ritualLines(await ritualsState()));
+  if (t === '纸条' || t === 'notes') {
+    const d = (await readKey('diary', null)) || {};
+    const notes = (d.notes || []).slice(-15);
+    if (!notes.length) return '纸条墙还是空的。';
+    return '【最近的纸条】\n' + notes.map((n) => `${n.who === 'me' ? '他' : '你'}：${n.text}`).join('\n');
+  }
 
-  /* 手帐 */
-  const diary = (await readKey('diary', null)) || {};
-  const entries = (diary.entries || []).slice(-10);
-  const notes = (diary.notes || []).slice(-8);
+  if (t === '打卡' || t === 'checkin' || t === 'rituals') {
+    const all = await ritualsState();
+    const days = Object.keys(all).sort().slice(-7).reverse();
+    if (!days.length) return '还没有任何打卡记录。';
+    return (
+      '【最近 7 天打卡】\n' +
+      days
+        .map((day) => {
+          const items = Object.entries(all[day] || {})
+            .filter(([, v]) => isOn(v))
+            .map(([k, v]) => {
+              const at = ritualAt(v);
+              const hhmm = at ? new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+              return `${RITUAL_NAMES[k] || k}${hhmm ? ' ' + hhmm : ''}`;
+            });
+          return `${day}：${items.length ? items.join('、') : '没打卡'}`;
+        })
+        .join('\n')
+    );
+  }
 
-  if (entries.length) {
-    lines.push('- 手帐最近几页：');
-    for (const e of entries) {
-      const cs = (e.comments || []).map((c) => `（${c.who === 'me' ? '他' : '你'}留：${c.text}）`).join('');
-      lines.push(`  · ${e.date} ${e.who === 'me' ? '他' : '你'}：${e.text}${cs}`);
+  if (t === '睡眠' || t === 'sleep') {
+    const list = (await sleepList()).slice(-7).reverse();
+    const all = await ritualsState();
+    const guess = sleepFromRituals(all);
+    if (!list.length && !guess) return '还没有睡眠记录。';
+    const lines = list.map((s) => `${s.date}：睡了 ${s.hours ?? '?'} 小时，醒 ${s.wakings} 次${s.note ? '，' + s.note : ''}`);
+    if (guess) lines.unshift(`（打卡推出来昨晚：${guess.hours} 小时，还没确认）`);
+    return '【最近睡眠】\n' + lines.join('\n');
+  }
+
+  if (t === '约定' || t === 'quests') {
+    const q = (await readKey('quests', null)) || {};
+    const tasks = (q.tasks || []).filter((x) => x.status !== 'done').slice(0, 10);
+    if (!tasks.length) return '现在没有未完成的约定。';
+    return (
+      `【约定】积分 ${q.points || 0}，连击 ${q.streak?.count || 0} 天\n` +
+      tasks.map((x) => `- ${x.title}（${x.points} 分，${x.status === 'submitted' ? '等他审' : '进行中'}）`).join('\n')
+    );
+  }
+
+  if (t === '书' || t === 'books') {
+    const books = (await readKey('books', [])) || [];
+    if (!books.length) return '书架是空的。';
+    return '【书架】\n' + books.map((b) => `《${b.title}》第 ${(b.progress?.chapter || 0) + 1}/${b.chapters} 章`).join('\n');
+  }
+
+  if (t === '头像' || t === 'avatar') {
+    const avatars = (await readKey('avatars', {})) || {};
+    const descs = (await readKey('avatarDesc', {})) || {};
+    if (!avatars.me && !avatars.ta) return '两个人现在都没设头像。';
+
+    const out = [];
+    for (const who of ['me', 'ta']) {
+      if (!avatars[who]) continue;
+      if (!descs[who]) {
+        try {
+          const r = await callVision({
+            system: '用两句话描述这张图：画面、颜色、气质。只描述，不评价。',
+            text: '这是头像。',
+            imageDataUrl: avatars[who],
+            maxTokens: 260
+          });
+          const x = String(r || '').trim();
+          if (x) descs[who] = x.slice(0, 200);
+        } catch {
+          /* 忽略 */
+        }
+        await writeKey('avatarDesc', descs);
+      }
+      out.push(`${who === 'me' ? '他' : '你'}的头像：${descs[who] || '画面说不出来'}`);
     }
-  }
-  if (notes.length) {
-    lines.push('- 纸条上最近的碎碎念：');
-    for (const n of notes) lines.push(`  · ${n.who === 'me' ? '他' : '你'}：${n.text}`);
+    return '【头像】\n' + out.join('\n');
   }
 
-  /* 约定 */
-  const quests = (await readKey('quests', null)) || {};
-  if (quests.tasks?.length) {
-    const open = quests.tasks.filter((t) => t.status !== 'done').slice(0, 5);
-    if (open.length) {
-      lines.push(`- 你们之间的约定（积分 ${quests.points || 0}，连击 ${quests.streak?.count || 0} 天）：`);
-      for (const t of open) lines.push(`  · ${t.title}（${t.points} 分，${t.status === 'submitted' ? '等审' : '进行中'}）`);
-    }
+  if (t === '界面' || t === 'ui') {
+    const ui = (await readKey('ui', null)) || {};
+    const dev = (await readKey('device', null)) || {};
+    return `【界面与设备】\n标题：${ui.homeTitle || '未设'}\n配色：${ui.theme || '默认'}\n设备：${dev.model || '未知'}`;
   }
 
-  /* 书 */
-  const books = (await readKey('books', [])) || [];
-  if (books.length) {
-    const b = books[0];
-    lines.push(`- 他在读《${b.title}》，第 ${(b.progress?.chapter || 0) + 1}/${b.chapters} 章。`);
+  if (t === '照片' || t === 'photos') {
+    return '【照片】图片在聊天记录里，但我没把画面记成文字。想让我记得，就告诉我图里是什么。';
   }
 
-  /* 界面设置 */
-  const ui = (await readKey('ui', null)) || {};
-  const bits = [];
-  if (ui.homeTitle) bits.push(`标题叫「${ui.homeTitle}」`);
-  if (ui.theme) bits.push(`配色是 ${ui.theme}`);
-  if (bits.length) lines.push(`- 软件里：${bits.join('，')}。`);
+  if (t === '全部' || t === 'all') {
+    const parts = [];
+    for (const x of ['手帐', '打卡', '睡眠', '约定', '书']) parts.push(await fetchTopic(x));
+    return parts.join('\n\n');
+  }
 
-  /* 设备 */
-  const dev = (await readKey('device', null)) || {};
-  if (dev.model) lines.push(`- 他用的手机：${dev.model}${dev.os ? '（' + dev.os + '）' : ''}。`);
-
-  if (!lines.length) return '';
-
-  return `\n\n【你现在知道的关于他的一切】\n${lines.join('\n')}\n这些都是真的，可以直接用。但别一口气全说出来，也别像在念清单。\n上面没写的事，就是你真的不知道——不要顺着他的话编一个答案。`;
+  return `没有「${t}」这一类。可查：手帐、纸条、打卡、睡眠、约定、书、头像、照片、界面。`;
 }
