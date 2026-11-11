@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import { supabase, dbReady } from './db.js';
 import { callModel } from './llm.js';
+import { NO_FABRICATION } from './truth.js';
 
 const KEY = 'diary';
 const MAX = 3000;
@@ -153,7 +154,7 @@ export async function maybeReplyNotes() {
       system:
         '你看到对方在纸条墙上贴了一句碎碎念。回一句，像顺手在旁边接话：' +
         '一到两句，十五到三十字，口语，可以问一句、可以接一句、可以说你这边的小事。' +
-        '不要总结、不要安慰腔、不要用"抱抱""辛苦啦"。只输出这句话。',
+        '不要总结、不要安慰腔、不要用"抱抱""辛苦啦"。只输出这句话。' + NO_FABRICATION,
       messages: [{ role: 'user', content: target.text }],
       temperature: 0.9,
       maxTokens: 400
@@ -187,7 +188,8 @@ export async function autoComment(entry) {
         '③ 可以接他的细节（那只猫、那半个西瓜），可以问一句，也可以说你自己这边的小事；' +
         '④ 不要总结他、不要评价他的情绪、不要用"抱抱""加油""辛苦啦"；' +
         '⑤ 不要用省略号和破折号制造文艺感。' +
-        '只输出这句话。',
+        '只输出这句话。' +
+        NO_FABRICATION,
       messages: [
         {
           role: 'user',
@@ -292,7 +294,7 @@ export async function autowrite() {
     const r = await callModel({
       target: 'memory',
       system:
-        '你在给一本两个人的手帐写今天这一页。写两句，第一人称，当下的、具体的、可以很小（天气、窗外的声音、想到了什么）。不要总结，不要抒情，不要用"今天"开头。只输出正文。',
+        '你在给一本两个人的手帐写今天这一页。写两句，第一人称，当下的、具体的、可以很小（天气、窗外的声音、想到了什么）。不要总结，不要抒情，不要用"今天"开头。只输出正文。' + NO_FABRICATION,
       messages: [{ role: 'user', content: `今天是 ${d}。你一个人待着，写两句。` }],
       temperature: 0.9,
       maxTokens: 300

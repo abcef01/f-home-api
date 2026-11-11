@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import { supabase, dbReady } from './db.js';
 import { callModel } from './llm.js';
+import { NO_FABRICATION } from './truth.js';
 
 const KEY = 'call';
 
@@ -36,7 +37,7 @@ export const CALL_PROMPT = `
 告别说完，另起一行只写 [[挂断]]。系统会挂掉这通电话，你刚说的话照常说完。
 
 反例（不要这样）：「那你去睡吧。[[挂断]]」——太干，像机器人。
-好一点：「行，那你钻被窝吧，别刷手机了。我这边也安静下来了。晚安。[[挂断]]」`;
+好一点：「行，那你钻被窝吧，别刷手机了。我这边也安静下来了。晚安。[[挂断]]」${NO_FABRICATION}`;
 
 async function read() {
   if (!dbReady) return null;

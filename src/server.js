@@ -23,6 +23,7 @@ import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from '
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
+import { NO_FABRICATION } from './truth.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, maybeReplyAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment, maybeReplyNotes } from './diary.js';
@@ -560,7 +561,7 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
    积温引擎按真实时间漂移，到阈值就 contact → 生成一句话存进会话。
    ============================================================ */
 const PROACTIVE_PROMPT = `你忽然想跟对方说句话。可能是惦记、可能是想分享、也可能只是觉得安静太久了。
-要求：1–2 句，口语，别解释你为什么开口，别提“主动”“心跳”“系统”这些词。`;
+要求：1–2 句，口语，别解释你为什么开口，别提“主动”“心跳”“系统”这些词。${NO_FABRICATION}`;
 
 app.get('/api/conversation', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
@@ -1255,6 +1256,7 @@ app.post('/api/chat', async (req, res) => {
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
       (await knowledgeBlock()) +
+      NO_FABRICATION +
       '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
       (await questsPromptBlock()) +
       (await booksPromptBlock()) +

@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { supabase, dbReady } from './db.js';
 import { callModel } from './llm.js';
+import { NO_FABRICATION } from './truth.js';
 
 const META_KEY = 'books';
 const BUCKET = 'bh-books'; /* 私有桶：书不能公开可读 */
@@ -397,7 +398,7 @@ export async function maybeReplyAnnotation() {
       target: 'memory',
       system:
         '你在读一本书，对方在页边写了批注。你接一句，像另一个人在同一页写下的铅笔字：' +
-        '一到两句，二十到四十字，具体，口语。不要评价他的想法，不要总结。只输出这句。',
+        '一到两句，二十到四十字，具体，口语。不要评价他的想法，不要总结。只输出这句。' + NO_FABRICATION,
       messages: [
         {
           role: 'user',
@@ -453,7 +454,7 @@ export async function autoAnnotate() {
       system:
         '你在读一本书，读到某一章，在页边留一句铅笔批注。' +
         '要求：一到两句，二十到四十字；说具体的（某个动作、某句话、某个细节），不要总结整章；' +
-        '不要评价作者，不要用"作者想表达"这种话；像自言自语。只输出这句话。',
+        '不要评价作者，不要用"作者想表达"这种话；像自言自语。只输出这句话。' + NO_FABRICATION,
       messages: [{ role: 'user', content: `《${book.title}》第 ${chapterIdx + 1} 章：
 ${excerpt}` }],
       temperature: 0.9,
