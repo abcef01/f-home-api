@@ -23,6 +23,7 @@ import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from '
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
+import { knowledgeBlock, checkIn, ritualsState } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
@@ -1245,6 +1246,7 @@ app.post('/api/chat', async (req, res) => {
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
+      (await knowledgeBlock()) +
       '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
       (await questsPromptBlock()) +
       (await booksPromptBlock()) +
@@ -2848,6 +2850,23 @@ app.post('/api/books/import-text', async (req, res) => {
       base64: Buffer.from(text, 'utf8').toString('base64')
     });
     res.json({ book: meta, books: await listBooks() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+
+/* ============================================================
+   打卡
+   ============================================================ */
+app.get('/api/rituals', async (req, res) => {
+  res.json({ rituals: await ritualsState() });
+});
+
+app.post('/api/rituals/check', async (req, res) => {
+  try {
+    const all = await checkIn(String(req.body?.id || '').slice(0, 20));
+    res.json({ rituals: all });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
