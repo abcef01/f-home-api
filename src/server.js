@@ -21,6 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
+import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -1124,6 +1125,8 @@ app.post('/api/chat', async (req, res) => {
     const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
+    const questRule = `\n\n偶尔你会想让对方替你做到某件小事（喝水、站起来走两步、早点睡、拍一张窗外的天）。想的时候，另起一段只写 [[quest:一句话|分数]]，分数 1-10。不要天天用，也不要拿它当命令。`;
+
     const callRule = `
 偶尔你会想从对方那里要点什么。这时候另起一段，只写一个标记，系统会帮你去问：
 
@@ -1147,6 +1150,7 @@ app.post('/api/chat', async (req, res) => {
       stickerPromptBlock(stickerList) +
       watchRule +
       callRule +
+      questRule +
       (await statePromptBlock()) +
       (await devicePromptBlock()) +
       (await factsPromptBlock()) +
@@ -1156,6 +1160,7 @@ app.post('/api/chat', async (req, res) => {
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
+      (await questsPromptBlock()) +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
       (await placePromptBlock()) +
@@ -1229,6 +1234,24 @@ app.post('/api/chat', async (req, res) => {
     const parsed = extractSticker(withWatch.content, stickerList);
     /* 它想打电话 */
     const wantsCall = /\[\[call\]\]/.test(parsed.content || '');
+
+    /* 他下的约定 */
+    const questMatch = (parsed.content || '').match(/\[\[quest:([^|\]]+)\|?(\d+)?\]\]/);
+    let questMade = null;
+    if (questMatch) {
+      try {
+        const Q2 = await loadQuests();
+        questMade = createTask(Q2, {
+          title: questMatch[1].trim(),
+          points: Number(questMatch[2]) || 5,
+          from: 'ta'
+        });
+        await saveQuests(Q2);
+      } catch {
+        /* 建失败就算了 */
+      }
+      parsed.content = parsed.content.replace(questMatch[0], '').trim();
+    }
     /* 它想知道你在哪 */
     const wantsWhere = /\[\[where\]\]/.test(parsed.content || '');
     if (wantsWhere) parsed.content = parsed.content.replace(/\[\[where\]\]/g, '').trim();
@@ -2408,6 +2431,64 @@ app.post('/api/pond/cmd', async (req, res) => {
   const output = pondCmd(S, String(req.body?.line || 'status'));
   await savePond(S);
   res.json({ output, pond: pondInfo(S) });
+});
+
+
+/* ============================================================
+   约定：任务 / 积分 / 连击（参考 3lmglow/Phosphene）
+   ============================================================ */
+app.get('/api/quests', async (req, res) => {
+  const Q = await loadQuests();
+  res.json(questsSummary(Q));
+});
+
+app.post('/api/quests/create', async (req, res) => {
+  try {
+    const Q = await loadQuests();
+    const t = createTask(Q, {
+      title: req.body?.title,
+      points: Number(req.body?.points) || 5,
+      daily: !!req.body?.daily,
+      from: req.body?.from || 'me'
+    });
+    await saveQuests(Q);
+    res.json({ task: t, ...questsSummary(Q) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/quests/submit', async (req, res) => {
+  try {
+    const Q = await loadQuests();
+    const t = submitQuest(Q, req.body?.id, { proof: req.body?.proof });
+    await saveQuests(Q);
+    res.json({ task: t, ...questsSummary(Q) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/quests/review', async (req, res) => {
+  try {
+    const Q = await loadQuests();
+    const r = await reviewQuest(Q, req.body?.id);
+    await saveQuests(Q);
+    res.json({ ...r, ...questsSummary(Q) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/quests/redeem', async (req, res) => {
+  try {
+    const Q = await loadQuests();
+    const r = redeemQuest(Q, req.body?.id);
+    await saveQuests(Q);
+    res.json({ ...r, ...questsSummary(Q) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => {
