@@ -83,7 +83,7 @@ class Rng {
 /* ---------- 状态 ---------- */
 export function newGame({ seed = Date.now() >>> 0, level = 3, redLines = [], safeword = '停一下' } = {}) {
   const clean = redLines.filter((k) => KINKS.includes(k));
-  return {
+  const game = {
     version: 1,
     seed,
     rngState: seed >>> 0,
@@ -103,9 +103,27 @@ export function newGame({ seed = Date.now() >>> 0, level = 3, redLines = [], saf
     pending: null, // 当前待处理的任务/事件
     log: []
   };
+
+  drawIdentity(game);
+  return game;
 }
 
 const other = (S) => S.players[1 - S.turnIdx];
+
+/* 抽身份卡 */
+function drawIdentity(S) {
+  if (!Array.isArray(IDENTITIES) || !IDENTITIES.length) return;
+  const pool = [...IDENTITIES];
+  for (const pl of S.players) {
+    const i = Math.floor(Math.random() * pool.length);
+    const card = pool.splice(i, 1)[0] || IDENTITIES[0];
+    pl.identity = { name: card.name, hint: card.hint || '', effects: card.effects || [] };
+  }
+  S.identities = S.players.map((x) => x.identity);
+}
+
+const hasEffect = (p, type, target) =>
+  (p.identity?.effects || []).some((e) => e.type === type && (!e.target || e.target === target));
 const me = (S) => S.players[S.turnIdx];
 const footer = (S) =>
   `💰 ${S.players[0].name} ${S.players[0].coins} 币 ｜ ${S.players[1].name} ${S.players[1].coins} 币 ｜ 第 ${Math.min(S.rolls + 1, S.maxRolls)}/${S.maxRolls} 轮`;
@@ -233,6 +251,7 @@ function statusText(S) {
     `${p.name} ${p.coins} 币 · 第 ${p.pos} 格 ｜ ${o.name} ${o.coins} 币 · 第 ${o.pos} 格`,
     `进度：${S.rolls}/${S.maxRolls * 2} 次掷骰`,
     S.redLines.length ? `红线：${S.redLines.join('、')}` : '红线：未设置（后庭默认关）',
+    S.players.map((pl) => `${pl.name}的身份：${pl.identity?.name || '（无）'}`).join(' ｜ '),
     `安全词：「${S.safeword || '404'}」（说出口立刻停）`,
     S.pending ? `待处理：${S.pending.text}` : ''
   ]
@@ -289,8 +308,12 @@ function rollDice(S) {
     if (p.cards.length < 3) p.cards.push(card.id);
     body = `🎴 抽到【${card.name}】：${card.desc}${p.cards.length >= 3 ? '（手满了，这张没用上）' : '（use ' + card.id + ' 使用）'}`;
   } else if (tile.type === 'jail') {
-    p.jail = 1;
-    body = '🔒 进监狱 1 轮。轮到你时被绑着，任对方处置。';
+    if (hasEffect(p, 'immunity', 'jail')) {
+      body = `🔓 ${p.identity.name}：你潇洒走过监狱，还顺手朝里面挥了挥手。`;
+    } else {
+      p.jail = 1;
+      body = '🔒 进监狱 1 轮。轮到你时被绑着，任对方处置。';
+    }
   } else if (tile.type === 'truth') {
     const pool = TRUTHS.filter((t) => t['强度'] <= S.level);
     const t = pool.length ? rng.pick(pool) : TRUTHS[0];
@@ -310,6 +333,18 @@ function rollDice(S) {
   }
 
   const head = `🎲 ${p.name} 掷出 ${d1}+${d2}=${steps}，走到第 ${p.pos} 格（${tile.name}）`;
+
+  /* 两人撞在同一格 → 对决 */
+  const opp = other(S);
+  if (!S.pending && opp.pos === p.pos) {
+    S.pending = {
+      kind: 'duel',
+      owner: p.id,
+      text: `⚔️ 你们撞在第 ${p.pos} 格上了。对决：各掷一次，点数小的给大的 2 币（也可以把它当成一次对撩，输的人先破功）。`,
+      duel: { a: p.id, b: opp.id, da: 1 + Math.floor(Math.random() * 6), db: 1 + Math.floor(Math.random() * 6) }
+    };
+    body += '\n⚔️ 同格对决！';
+  }
   S.log.push(head);
 
   /* 轮换：除非有 pending 要处理 */
@@ -341,6 +376,26 @@ function finishTask(S) {
     S.pending = null;
     S.turnIdx = 1 - S.turnIdx;
     return `🏠 占下了第 ${p.pos} 格。对方踩到要交过路费。\n${footer(S)}`;
+  }
+
+  if (S.pending.kind === 'duel') {
+    const d = S.pending.duel;
+    const A = S.players[d.a];
+    const B = S.players[d.b];
+    let result;
+    if (d.da === d.db) {
+      result = `⚔️ 你们各掷出 ${d.da}，打平了。这一场算扯平。`;
+    } else {
+      const win = d.da > d.db ? A : B;
+      const lose = d.da > d.db ? B : A;
+      const take = Math.min(2, lose.coins);
+      lose.coins -= take;
+      win.coins += take;
+      result = `⚔️ ${win.name} 掷出 ${Math.max(d.da, d.db)}，${lose.name} 掷出 ${Math.min(d.da, d.db)}——${win.name} 赢了，从 ${lose.name} 那拿走 ${take} 币。`;
+    }
+    S.pending = null;
+    S.turnIdx = 1 - S.turnIdx;
+    return result + '\n' + footer(S);
   }
 
   if (S.pending.kind === 'truth') {

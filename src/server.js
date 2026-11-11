@@ -22,6 +22,7 @@ import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
+import { exportAll, importAll } from './backup.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
@@ -1177,6 +1178,7 @@ app.post('/api/chat', async (req, res) => {
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
+      '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
       (await questsPromptBlock()) +
       (await booksPromptBlock()) +
       (await diaryPromptBlock()) +
@@ -2688,6 +2690,46 @@ app.get('/api/slots/tags', async (req, res) => {
     .filter((d) => all || d.id !== 'gore')
     .map((d) => ({ id: d.id, zh: d.zh || (d.id === 'gore' ? '重口' : d.id), tags: d.tags }));
   res.json({ dimensions: dims });
+});
+
+
+/* ============================================================
+   数据备份
+   ============================================================ */
+app.get('/api/backup/export', async (req, res) => {
+  try {
+    const data = await exportAll();
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="bunny-home-backup-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.send(JSON.stringify(data, null, 1));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/backup/import', async (req, res) => {
+  try {
+    const r = await importAll(req.body?.payload || req.body, { mode: req.body?.mode || 'merge' });
+    res.json(r);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/* 从粘贴的正文建一本书 */
+app.post('/api/books/import-text', async (req, res) => {
+  try {
+    const text = String(req.body?.text || '');
+    if (text.trim().length < 50) return res.status(400).json({ error: '太短了，至少粘一段正文' });
+    const title = String(req.body?.title || '粘贴的书').slice(0, 60);
+    const meta = await importBook({
+      filename: title + '.txt',
+      base64: Buffer.from(text, 'utf8').toString('base64')
+    });
+    res.json({ book: meta, books: await listBooks() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => {
