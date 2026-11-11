@@ -16,6 +16,7 @@ import { decide as timingDecide } from './timing.js';
 import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { startCall, currentCall, callTurn, endCall } from './call.js';
+import { timePromptBlock, weatherPromptBlock, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -1087,6 +1088,8 @@ app.post('/api/chat', async (req, res) => {
       pillText +
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
+      (await timePromptBlock()) +
+      (await weatherPromptBlock()) +
       COT_FORMAT +
       (await drivesPromptBlock());
 
@@ -1944,6 +1947,25 @@ ${prog ? `和弦走向：${prog}。` : ''}${dyn ? dyn + '。' : ''}
 
 你听到的是这些结构和感觉，不是歌词。说说你听它时想到什么，两三句就好，别做乐理分析，别提 BPM 这些词。`;
 }
+
+/* 位置与天气 */
+app.get('/api/location', async (req, res) => {
+  res.json({ location: await getLocation(), weather: await getWeather() });
+});
+
+app.post('/api/location', async (req, res) => {
+  try {
+    const { lat, lon, city } = req.body || {};
+    const loc = await setLocation({ lat, lon, city });
+    res.json({ location: loc, weather: await getWeather(true) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/weather', async (req, res) => {
+  res.json({ weather: await getWeather(req.query.force === '1') });
+});
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
