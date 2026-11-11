@@ -981,7 +981,7 @@ app.post('/api/chat/stream', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
 
-  const { conversationId, message, sticker, image, storeOnly, music } = req.body || {};
+  const { conversationId, message, sticker, image, storeOnly, music, ambience } = req.body || {};
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
@@ -1088,6 +1088,7 @@ app.post('/api/chat', async (req, res) => {
       pillText +
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
+      ambiencePromptBlock(ambience) +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
       (await placePromptBlock()) +
@@ -1166,7 +1167,25 @@ app.post('/api/chat', async (req, res) => {
     if (wantsCall) parsed.content = parsed.content.replace(/\[\[call\]\]/g, '').trim();
     /* 剥出思考，正文照常分气泡 */
     const { thought, content: bodyText } = extractThought(parsed.content);
-    const pieces = splitBubbles(bodyText);
+
+    /* 只剩思考没有正文时，把独白压成一句说出口的话 */
+    let spoken = bodyText;
+    if (!spoken && thought) {
+      try {
+        const short = await callModel({
+          target: 'memory',
+          system: '把下面这段内心独白改写成一句直接说给对方的话，20 字以内，口语，只输出这一句。',
+          messages: [{ role: 'user', content: thought.slice(0, 800) }],
+          temperature: 0.7,
+          maxTokens: 300
+        });
+        spoken = (short.content || '').trim().replace(/^['「『]|['」』]$/g, '');
+      } catch {
+        spoken = '';
+      }
+    }
+
+    const pieces = splitBubbles(spoken);
     /* 整条回复只有标记时，补一句话，别让气泡是空的 */
     if (!pieces.length && wantsCall) pieces.push('想听听你的声音。');
     if (!pieces.length && withWatch.requested) pieces.push('想看看你在做什么。');
@@ -1772,10 +1791,31 @@ const COT_QUALITY = `
 
 /* 从回复里剥出思考 */
 function extractThought(text) {
-  const m = String(text || '').match(/\[\[思考：([\s\S]*?)\]\]/);
-  if (!m) return { thought: null, content: String(text || '').trim() };
-  const content = String(text).replace(m[0], '').trim();
-  return { thought: m[1].trim(), content };
+  let content = String(text || '').trim();
+  let thought = null;
+
+  /* 正常情况：[[思考：…]] */
+  const m = content.match(/\[\[思考：([\s\S]*?)\]\]/);
+  if (m) {
+    thought = m[1].trim();
+    content = content.replace(m[0], '').trim();
+  } else {
+    /* 没闭合：从标记起全当思考，正文留前面 */
+    const idx = content.indexOf('[[思考：');
+    if (idx >= 0) {
+      thought = content.slice(idx + 5).replace(/\]\]\s*$/, '').trim();
+      content = content.slice(0, idx).trim();
+    }
+  }
+
+  /* 清掉残留的标记碎片 */
+  content = content
+    .replace(/\[\[\s*\/?\s*(思考|call|watch|where)?\s*\]\]/g, '')
+    .replace(/^\s*\]\]\s*/g, '')
+    .replace(/\s*\[\[\s*$/g, '')
+    .trim();
+
+  return { thought, content };
 }
 
 /* 粗略判断这句话是哪种刺激（宁可漏，不要错判成生气） */
@@ -1973,6 +2013,18 @@ app.post('/api/location', async (req, res) => {
 app.get('/api/weather', async (req, res) => {
   res.json({ weather: await getWeather(req.query.force === '1') });
 });
+
+/* ============================================================
+   环境声：把测出来的数字翻译成"他那儿多吵"
+   ============================================================ */
+function ambiencePromptBlock(amb) {
+  if (!amb || typeof amb.db !== 'number') return '';
+
+  const bits = [`大概 ${amb.db} 分贝`, amb.label, amb.texture];
+  if (amb.peakDb && amb.peakDb - amb.db > 12) bits.push('中间有几次突然的响动');
+
+  return `\n\n【他那儿的声音】${bits.join('，')}。\n这是麦克风听出来的大概音量，不精确。可以顺着说一句（太吵就心疼一下、太静就问一句在干嘛），但不要报分贝数。`;
+}
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
