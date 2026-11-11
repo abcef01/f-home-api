@@ -124,12 +124,25 @@ function drawIdentity(S) {
 
 const hasEffect = (p, type, target) =>
   (p.identity?.effects || []).some((e) => e.type === type && (!e.target || e.target === target));
+
+/* 取第一个匹配的效果对象 */
+const effOf = (p, type, target) =>
+  (p.identity?.effects || []).find((e) => e.type === type && (!target || !e.target || e.target === target));
+
+/* 取数值（没有就是 0） */
+const effNum = (p, type, target) => {
+  const e = effOf(p, type, target);
+  return e && typeof e.value === 'number' ? e.value : 0;
+};
 const me = (S) => S.players[S.turnIdx];
 const footer = (S) =>
   `💰 ${S.players[0].name} ${S.players[0].coins} 币 ｜ ${S.players[1].name} ${S.players[1].coins} 币 ｜ 第 ${Math.min(S.rolls + 1, S.maxRolls)}/${S.maxRolls} 轮`;
 
 /* ---------- 抽任务（红线在这一步过滤） ---------- */
 function drawTask(S, rng) {
+  /* 身份的强度修正（比如"发情期"+1）*/
+  const p = me(S);
+  const adjLevel = Math.max(1, Math.min(6, S.level + effNum(p, 'modify_intensity')));
   const pool = TASKS.filter((t) => {
     if (t['强度'] > S.level) return false;
     /* 红线：命中任何一条就整个不要 */
@@ -209,11 +222,30 @@ export function cmd(S, line = '') {
     return skipTask(S);
   }
 
+  if (verb === 'reroll') {
+    const p = me(S);
+    if (!S.pending || S.pending.kind !== 'task') return '现在没有可以换的任务。';
+    if (p.rerolled) return '这一局你已经换过一次了。';
+    if (!effNum(p, 'task_reroll') && !hasEffect(p, 'task_reroll')) return '你的身份不能换任务。';
+    p.rerolled = true;
+    const rng = new Rng(S.rngState, S.rngCalls);
+    const t = drawTask(S, rng);
+    if (!t) return '没抽到合适的任务，保持原样。';
+    S.rngState = rng.state;
+    S.rngCalls = rng.calls;
+    S.pending = { kind: 'task', ...t, owner: p.id };
+    return `🔄 换了一个：【任务·强度${t.intensity}·${t.type}】\n${t.text}`;
+  }
+
   if (verb === 'buy') {
     const p = me(S);
-    if (p.coins < 3) return '币不够，商店要 3 币。';
-    p.coins -= 3;
+    const free = effNum(p, 'modify_cost') === 0 && !p.freeUsed;
+    if (!free && p.coins < 3) return '币不够，商店要 3 币。';
+    if (free) p.freeUsed = true;
+    else p.coins -= 3;
     const rng = new Rng(S.rngState, S.rngCalls);
+    const kinkGain = effNum(p, 'kink_coin');
+    if (kinkGain) p.coins += kinkGain;
     const card = rng.pick(CARDS);
     S.rngState = rng.state;
     S.rngCalls = rng.calls;
@@ -277,8 +309,9 @@ function rollDice(S) {
   let body = '';
 
   if (tile.type === 'start') {
-    p.coins += 2;
-    body = '🎯 回到起点，拿 2 币。';
+    const lap = 2 + effNum(p, 'lap_bonus');
+    p.coins += lap;
+    body = `🎯 回到起点，拿 ${lap} 币。` + (effNum(p, 'lap_bonus') ? '（绕圈加成）' : '');
   } else if (tile.type === 'task') {
     const task = drawTask(S, rng);
     if (!task) {
@@ -295,9 +328,15 @@ function rollDice(S) {
     } else if (owner.id === p.id) {
       body = '🏠 这是你自己的地盘，歇一脚。';
     } else {
-      p.coins = Math.max(0, p.coins - 2);
-      owner.coins += 2;
-      body = `🏠 踩到 ${owner.name} 的地盘，交 2 币。`;
+      const toll = 2 + effNum(owner, 'toll_plus');
+      if (hasEffect(owner, 'toll_serve_only')) {
+        body = `🏠 踩到 ${owner.name} 的地盘。${owner.identity.name} 只收"服侍"，不收币——\n（听 ${owner.name} 差遣一次，然后说 done）`;
+        S.pending = { kind: 'tollServe', owner: p.id };
+      } else {
+        p.coins = Math.max(0, p.coins - toll);
+        owner.coins += toll;
+        body = `🏠 踩到 ${owner.name} 的地盘，交 ${toll} 币。`;
+      }
     }
   } else if (tile.type === 'shop') {
     body = '🛒 商店。花 3 币摸一张卡（buy）。';
@@ -322,7 +361,8 @@ function rollDice(S) {
     S.pending = { kind: 'truth', text: t['内容'], owner: p.id };
     body = `💬 【真心话·强度${t['强度']}】\n${t['内容']}`;
   } else {
-    const good = rng.random() < 0.5;
+    const luck = effOf(p, 'mystery_luck')?.value ?? 0.5;
+    const good = rng.random() < luck;
     if (good) {
       p.coins += 3;
       body = '❓ 好运：捡到 3 币。';
@@ -361,14 +401,68 @@ function finishTask(S) {
   const p = S.players[S.pending.owner];
 
   if (S.pending.kind === 'task') {
-    const gain = rewardOf(S.pending.intensity);
+    let gain = rewardOf(S.pending.intensity);
+    const notes = [];
+
+    /* 身份带来的额外收入 */
+    if (S.pending.intensity >= 4) {
+      const sb = effNum(p, 'strength_bonus');
+      if (sb) {
+        gain += sb;
+        notes.push(`强度加成 +${sb}`);
+      }
+    }
+    const typeB = effNum(p, 'type_bonus') || effNum(p, 'type_bonus', '自己');
+    if (typeB) {
+      gain += typeB;
+      notes.push(`身份加成 +${typeB}`);
+    }
+    const tb = effNum(p, 'target_bonus', '对方');
+    if (tb) {
+      gain += tb;
+      notes.push(`冲着对方去 +${tb}`);
+    }
+    const rb = effNum(p, 'reverse_bonus');
+    if (rb) {
+      gain += rb;
+      notes.push(`反过来 Also +${rb}`);
+    }
+    const kb = effNum(p, 'kink_bonus');
+    if (kb) {
+      gain += kb;
+      notes.push(`加成 +${kb}`);
+    }
+
     p.coins += gain;
     p.done += 1;
     const tile = BOARD[p.pos];
     if (tile.type === 'task' && !p.owned.includes(p.pos)) p.owned.push(p.pos);
+
+    /* 额外任务：做完还要再做一次 */
+    const extra = effNum(p, 'extra_task');
+    if (extra > 0 && (S.pending.extraLeft || 0) === 0) {
+      S.pending.extraLeft = extra;
+      S.pending = null;
+      /* 重新抽一个任务挂上去 */
+      const rng2 = new Rng(S.rngState, S.rngCalls);
+      const t2 = drawTask(S, rng2);
+      if (t2) {
+        S.rngState = rng2.state;
+        S.rngCalls = rng2.calls;
+        S.pending = { kind: 'task', ...t2, owner: p.id, extraLeft: extra - 1 };
+        return `✅ 完成，+${gain} 币${notes.length ? '（' + notes.join('、') + '）' : ''}。你的身份让你再做一次：\n【任务·强度${t2.intensity}·${t2.type}】\n${t2.text}\n\n（done / skip）`;
+      }
+    }
+
     S.pending = null;
     S.turnIdx = 1 - S.turnIdx;
-    return `✅ 完成，+${gain} 币，这格归你了。\n${footer(S)}`;
+    return `✅ 完成，+${gain} 币${notes.length ? '（' + notes.join('、') + '）' : ''}，这格归你了。\n${footer(S)}`;
+  }
+
+  if (S.pending.kind === 'tollServe') {
+    S.pending = null;
+    S.turnIdx = 1 - S.turnIdx;
+    return '✅ 服侍过了，过路费免了。\n' + footer(S);
   }
 
   if (S.pending.kind === 'buyTerritory') {
@@ -400,9 +494,11 @@ function finishTask(S) {
 
   if (S.pending.kind === 'truth') {
     p.coins += 1;
+    const witness = effNum(other(S), 'truth_witness');
+    if (witness) other(S).coins += witness;
     S.pending = null;
     S.turnIdx = 1 - S.turnIdx;
-    return `✅ 答了，+1 币。\n${footer(S)}`;
+    return `✅ 答了，+1 币。${witness ? `（${other(S).name} 作为见证人 +${witness}）` : ''}\n${footer(S)}`;
   }
 
   S.pending = null;
@@ -476,6 +572,16 @@ function useCard(S, id) {
 }
 
 function endText(S) {
+  /* 身份结算：把币转给对方 */
+  for (const pl of S.players) {
+    const t = effNum(pl, 'end_transfer');
+    if (t) {
+      const give = Math.min(t, pl.coins);
+      pl.coins -= give;
+      S.players[1 - pl.id].coins += give;
+    }
+  }
+
   const [a, b] = S.players;
   if (a.coins === b.coins) {
     return `⚖️ 打平了（各 ${a.coins} 币）。要么平手言和，各下一道终极指令；要么加掷一轮再比。`;
