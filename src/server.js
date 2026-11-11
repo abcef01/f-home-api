@@ -980,7 +980,7 @@ app.post('/api/chat/stream', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
 
-  const { conversationId, message, sticker, image, storeOnly } = req.body || {};
+  const { conversationId, message, sticker, image, storeOnly, music } = req.body || {};
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
@@ -1044,7 +1044,7 @@ app.post('/api/chat', async (req, res) => {
         role: 'user',
         content: message,
         tokens: estimateTokens(message),
-        meta: { ...(sticker ? { sticker } : {}), ...(imageUrl ? { image: imageUrl } : {}) }
+        meta: { ...(sticker ? { sticker } : {}), ...(imageUrl ? { image: imageUrl } : {}), ...(music ? { music } : {}) }
       })
       .select()
       .single();
@@ -1086,6 +1086,7 @@ app.post('/api/chat', async (req, res) => {
       (await memory3Block(message)) +
       pillText +
       (await conflictCheckBlock(message)) +
+      musicPromptBlock(music) +
       COT_FORMAT +
       (await drivesPromptBlock());
 
@@ -1919,6 +1920,29 @@ async function tonePromptBlock(tone) {
 
   if (!cues.length) return '';
   return `\n\n【听出来的语气】他这次说话${cues.join('，')}。只当参考，不要直接点破，也别当成诊断。`;
+}
+
+/* ============================================================
+   听歌：把分析出来的结构翻译成「你听到了什么」
+   ============================================================ */
+function musicPromptBlock(music) {
+  if (!music || typeof music !== 'object' || music.error) return '';
+
+  const bits = [];
+  if (music.duration) bits.push(`${Math.floor(music.duration / 60)} 分 ${music.duration % 60} 秒`);
+  if (music.bpm) bits.push(`速度大约 ${music.bpm} BPM`);
+  if (music.key) bits.push(`${music.key}（把握 ${Math.round((music.keyConfidence || 0) * 100)}%）`);
+  if (music.brightness) bits.push(`音色偏${music.brightness}`);
+  if (music.density) bits.push(`密度 ${music.density} 个音/秒`);
+
+  const prog = (music.progression || []).slice(0, 8).map((c) => c.name).join(' → ');
+  const dyn = music.dynamics ? `强弱起伏${music.dynamics.range > 0.25 ? '明显' : '不大'}` : '';
+
+  return `\n\n【对方给你发了一首歌，你听到的是】
+${bits.join('，')}。
+${prog ? `和弦走向：${prog}。` : ''}${dyn ? dyn + '。' : ''}
+
+你听到的是这些结构和感觉，不是歌词。说说你听它时想到什么，两三句就好，别做乐理分析，别提 BPM 这些词。`;
 }
 
 app.listen(PORT, () => {
