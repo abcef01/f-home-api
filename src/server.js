@@ -16,6 +16,7 @@ import { decide as timingDecide } from './timing.js';
 import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { startCall, currentCall, callTurn, endCall } from './call.js';
+import { cmd as fishCmd, newState as fishNew } from './game/fishing.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -2146,6 +2147,42 @@ function ambiencePromptBlock(amb) {
 
   return `\n\n【他那儿的声音】${bits.join('，')}。\n这是麦克风听出来的大概音量，不精确。可以顺着说一句（太吵就心疼一下、太静就问一句在干嘛），但不要报分贝数。`;
 }
+
+
+/* ============================================================
+   钓鱼（移植自 tutusagi/ai-fishing-game）
+   ============================================================ */
+const FISH_KEY = 'fishing';
+
+async function loadFishing() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', FISH_KEY).maybeSingle();
+  return data?.value || fishNew();
+}
+
+async function saveFishing(S) {
+  await supabase.from('app_settings').upsert({ key: FISH_KEY, value: S, updated_at: new Date().toISOString() });
+}
+
+app.get('/api/fishing', async (req, res) => {
+  const S = await loadFishing();
+  res.json({ state: S, status: fishCmd(S, 'status') });
+});
+
+app.post('/api/fishing/cmd', async (req, res) => {
+  const line = String(req.body?.line || '').trim();
+  if (!line) return res.status(400).json({ error: '要做什么？' });
+  const S = await loadFishing();
+  const out = fishCmd(S, line);
+  await saveFishing(S);
+  res.json({ output: out, status: fishCmd(S, 'status') });
+});
+
+app.post('/api/fishing/new', async (req, res) => {
+  const seed = Number(req.body?.seed) || Date.now() % 0xffffffff;
+  const S = fishNew(seed);
+  await saveFishing(S);
+  res.json({ state: S, status: fishCmd(S, 'status'), seed });
+});
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
