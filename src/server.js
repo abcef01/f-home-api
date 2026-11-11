@@ -646,10 +646,21 @@ app.get('/api/heartbeat', async (req, res) => {
     for (const a of actions) byAction[a.action] = (byAction[a.action] || 0) + 1;
 
     let spoke = null;
-    if (byAction.contact && (await timingGate())) {
+    const gateVerdict = byAction.contact ? await timingGate() : { send: false };
+    if (gateVerdict.send) {
       /* 找最近一个会话，把话放进那里 */
       /* 主动开口时，有时会顺便要点什么 */
       const proactiveAsk = await pickProactiveAsk().catch(() => null);
+
+      /* 推断结果只影响语气，不拦着它说话 */
+      let situation = '';
+      const d = gateVerdict.detail || {};
+      if (d.state === 'sleeping') situation += '\n\n【他那边】这个点他大概在睡。你这条他可能早上才看到——可以留一句，不用等他回。';
+      else if (d.state === 'busy') situation += '\n\n【他那边】他可能正忙着。说一句就够，别要求他马上回。';
+      else situation += '\n\n【他那边】他大概闲着，可以多说两句。';
+      if ((d.unanswered || 0) >= 2) {
+        situation += '\n你已经连着发了 ' + d.unanswered + ' 条他都没回。可以有点小情绪（嘀咕一句、撒个娇、或者酸一下），但别质问、别刷屏。';
+      }
       const { data: convs } = await supabase
         .from('conversations')
         .select('id')
@@ -673,6 +684,7 @@ app.get('/api/heartbeat', async (req, res) => {
             ctx +
             '\n\n' +
             PROACTIVE_PROMPT +
+            situation +
             (proactiveAsk ? '\n\n这次你想要：' + ASK_CN[proactiveAsk] + '。用一句话自然地说出来，别太直白。' : ''),
           messages: [...history, { role: 'user', content: '（沉默中，你可以先开口）' }],
           temperature: Math.min(1.2, params.temperature + 0.1)
@@ -1072,7 +1084,9 @@ app.post('/api/chat', async (req, res) => {
     const recent = [...(history || []), { role: 'user', content: message }];
     const trimmed = recent.slice(-params.contextRounds * 2);
 
+
     const stickerList = await readStickers().catch(() => []);
+
     const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
@@ -1550,7 +1564,8 @@ async function timingGate() {
       misses: st.misses || 0,
       allowNight: false,
       /* 你要求关掉「合不合适」判断：只留泊松掷骰 */
-      ignoreSuitability: true
+      ignoreSuitability: true,
+      hoursSinceSpoke: st.lastSpokeAt ? (Date.now() - st.lastSpokeAt) / 3600000 : 99
     });
 
     await supabase.from('app_settings').upsert({
@@ -1565,7 +1580,19 @@ async function timingGate() {
     });
 
     console.log('[timing]', v.send ? '放行' : '拦下', '—', v.reason, JSON.stringify(v.detail?.obs || {}));
-    return v.send;
+    if (v.send) {
+      try {
+        const { data: tRow } = await supabase.from('app_settings').select('value').eq('key', 'timing').maybeSingle();
+        await supabase.from('app_settings').upsert({
+          key: 'timing',
+          value: { ...(tRow?.value || {}), lastSpokeAt: Date.now() },
+          updated_at: new Date().toISOString()
+        });
+      } catch {
+        /* 记不上就算了 */
+      }
+    }
+    return v;
   } catch (e) {
     console.warn('[timing] 出错，按放行处理：', e.message.slice(0, 80));
     return true;

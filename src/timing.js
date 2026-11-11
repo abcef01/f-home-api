@@ -116,7 +116,9 @@ export function decide({
   misses = 0,
   rate = 0.16,
   allowNight = true,
-  ignoreSuitability = false
+  ignoreSuitability = true,
+  hoursSinceSpoke = 0,
+  forceAfterHours = 4
 }) {
   const inferred = inferState({ hour, device, minutesSinceUser, unanswered });
   const p = desire({ minutes: minutesSinceCheck, misses, rate });
@@ -140,6 +142,11 @@ export function decide({
     if (inferred.utility < 0.5 && inferred.state !== 'care') {
       return { send: false, reason: `现在不太合适（${inferred.label}）`, detail };
     }
+  }
+
+  /* 太久没说话了：不管掷没掷中，都来找一下 */
+  if (hoursSinceSpoke >= forceAfterHours) {
+    return { send: true, reason: `${Math.round(hoursSinceSpoke)} 小时没说话了，来找你`, detail };
   }
 
   /* 泊松没掷中 */
