@@ -47,6 +47,11 @@ export function addEntry(D, { text, who = 'me', date, image }) {
     at: Date.now()
   };
   D.entries.push(e);
+
+  /* 你刚写完，他不会马上看：排一个 30–90 分钟后的随机时刻 */
+  if (e.who === 'me' && (!D.nextReadAt || D.nextReadAt < Date.now())) {
+    D.nextReadAt = Date.now() + (30 + Math.random() * 60) * 60 * 1000;
+  }
   if (D.entries.length > MAX) D.entries = D.entries.slice(-MAX);
   return e;
 }
@@ -66,6 +71,10 @@ export function addComment(D, id, { text, who = 'me' }) {
 export async function maybeReadAndComment() {
   const D = await load();
   const now = Date.now();
+
+  /* 随机冷却：不是每次心跳都去翻，翻的时刻也不会落在整十分。
+     25–100 分钟之间的某个时刻才看一次，看完再随机等下一次。 */
+  if (D.nextReadAt && now < D.nextReadAt) return null;
   const MIN_AGE = 25 * 60 * 1000; // 至少放了 25 分钟
   const MAX_AGE = 30 * 60 * 60 * 1000; // 只回一天以内的
 
@@ -73,6 +82,10 @@ export async function maybeReadAndComment() {
   D.commented = D.commented || {};
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   if ((D.commented[today] || 0) >= 2) return null;
+
+  /* 不管有没有留言，都把下一次翻的时间往后推一段随机时长 */
+  const gapMin = 25 + Math.random() * 75;
+  D.nextReadAt = now + gapMin * 60 * 1000;
 
   const candidates = D.entries.filter((e) => {
     if (e.who !== 'me') return false;
@@ -82,13 +95,22 @@ export async function maybeReadAndComment() {
     return !hasTaComment;
   });
 
-  if (!candidates.length) return null;
+  if (!candidates.length) {
+    await save(D);
+    return null;
+  }
   /* 不是每次都看；看了也不是每条都想说话 */
-  if (Math.random() > 0.45) return null;
+  if (Math.random() > 0.45) {
+    await save(D);
+    return null;
+  }
 
   const target = candidates[candidates.length - 1];
   const c = await autoComment(target);
-  if (!c) return null;
+  if (!c) {
+    await save(D);
+    return null;
+  }
 
   target.comments = target.comments || [];
   target.comments.push(c);
