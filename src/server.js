@@ -21,6 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
+import { readJson as readJsonFile } from './game/read-json.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
@@ -2675,6 +2676,18 @@ app.delete('/api/books/:id/bookmark/:bid', async (req, res) => {
 
 app.delete('/api/books/:id', async (req, res) => {
   res.json(await removeBook(req.params.id));
+});
+
+
+/* 老虎机标签（来自 Ruota della Fortuna，MIT） */
+const slotsTags = readJsonFile(new URL('./game/slots-tags.json', import.meta.url));
+app.get('/api/slots/tags', async (req, res) => {
+  const all = req.query.all === '1';
+  const raw = slotsTags;
+  const dims = raw
+    .filter((d) => all || d.id !== 'gore')
+    .map((d) => ({ id: d.id, zh: d.zh || (d.id === 'gore' ? '重口' : d.id), tags: d.tags }));
+  res.json({ dimensions: dims });
 });
 
 app.listen(PORT, () => {
