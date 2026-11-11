@@ -67,7 +67,12 @@ export function newState(seed = DEFAULT_SEED) {
     encyclopedia: {},
     stats: { total_casts: 0, total_caught: 0, total_chests: 0 },
     fever: 0,
-    free_bait: 0
+    free_bait: 0,
+    oxygen: 0,
+    oxygen_ever: false,
+    dive_unlocked: [],
+    map_fragments: {},
+    expedition: null
   };
 }
 
@@ -156,6 +161,36 @@ function advSeason(S) {
   S.season_id = next.id;
   S.season_started_turn = S.turn;
   return `🍃 ${old}季结束，已进入${next.name}季——某些鱼群离开了这片水域，也有新的鱼群正等着被发现。\n`;
+}
+
+
+/* ---------- 潜水 ---------- */
+const OXYGEN = DATA.OXYGEN;
+const DIVE_ENCOUNTERS = DATA.DIVE_ENCOUNTERS || [];
+const DIVE_EVENTS = DATA.DIVE_EVENTS || {};
+const DIVE_JUNK = DATA._DIVE_JUNK || [];
+const FRAG_CHANCE = DATA._FRAG_CHANCE ?? 0.15;
+
+const diveUnlocked = (S, locId) => (S.dive_unlocked || []).includes(locId);
+const diveAware = (S) => Boolean(S.oxygen_ever || (S.dive_unlocked || []).length || Object.keys(S.map_fragments || {}).length);
+
+function fragsNeeded(loc) {
+  const c = loc.unlock_cost;
+  return c <= 200 ? 3 : c <= 480 ? 4 : 5;
+}
+
+function gainFragment(S, locId) {
+  S.map_fragments = S.map_fragments || {};
+  S.map_fragments[locId] = (S.map_fragments[locId] || 0) + 1;
+  const need = fragsNeeded(LOCATIONS[locId]);
+  const name = LOCATIONS[locId].name;
+  if (S.map_fragments[locId] >= need) {
+    S.map_fragments[locId] = 0;
+    S.dive_unlocked = S.dive_unlocked || [];
+    if (!S.dive_unlocked.includes(locId)) S.dive_unlocked.push(locId);
+    return `\n🗺️ 集齐 ${need} 块碎片，拼成了【${name}】的藏宝图——这里能潜水了！（买氧气瓶后 dive 下水）`;
+  }
+  return `\n🧩 捞上来一块【${name}】的藏宝图碎片（${S.map_fragments[locId]}/${need}）`;
 }
 
 const footer = (S) =>
@@ -403,6 +438,11 @@ function castStep(S, rng, baitId) {
   biteLine(rng, f.rarity); // 保持随机流一致，不显示
 
   const luck = rollLuck(S, rng, pool, baitId, f, size, inst);
+
+  let fragLine = '';
+  if (!diveUnlocked(S, S.location_id) && rng.random() < FRAG_CHANCE) {
+    fragLine = gainFragment(S, S.location_id);
+  }
   const be = bait.effects || {};
   const pref =
     Object.keys(be.rarity_weight_mult || {}).includes(f.rarity) ||
@@ -415,6 +455,7 @@ function castStep(S, rng, baitId) {
       milestoneLine(f, first, S) +
       feverLine +
       (luck ? '\n' + luck : '') +
+      fragLine +
       ambience(loc, rng),
     consumed: true,
     kind: 'fish',
@@ -480,6 +521,127 @@ function castMany(S, baitId, times) {
   return `${head}\n${body}${tail}`;
 }
 
+
+/* ---------- 潜水远征 ---------- */
+function diveStep(S, rng) {
+  if ((S.oxygen || 0) <= 0) return { text: '氧气瓶用光了！去 shop 买（buy oxygen 5）。', consumed: false, kind: 'no_air' };
+  S.oxygen -= 1;
+  S.turn += 1;
+  S.stats.total_dives = (S.stats.total_dives || 0) + 1;
+
+  const seasonMsg = advSeason(S);
+  const loc = LOCATIONS[S.location_id];
+
+  if (rng.random() < loc.junk_chance_base) {
+    return {
+      text: seasonMsg + `🪨 ${DIVE_JUNK[rng.rint(0, DIVE_JUNK.length - 1)]}。空潜一次，什么也没摸到。${ambience(loc, rng)}`,
+      consumed: true,
+      kind: 'junk'
+    };
+  }
+
+  const pool = FISH_LIST.filter((f) => f.dive && !f.branch_only && eligible(f, S.location_id, S.season_id));
+  if (!pool.length) {
+    return { text: seasonMsg + '潜下去，这片水域水下这个季节空荡荡的。' + ambience(loc, rng), consumed: true, kind: 'empty' };
+  }
+
+  const weights = pool.map((f) => effWeight(f, S.location_id, S.season_id, 'basic_worm'));
+  const f = wpick(rng, pool, weights);
+  const size = rollSize(rng, f);
+  const value = valueOf(f, size);
+  const { inst, first } = recordCatch(S, f, size, value);
+
+  /* 水下奇遇 / 大遗迹 */
+  let encounter = '';
+  const encPool = DIVE_ENCOUNTERS.map((e) => ({ id: e.id, weight: e.weight || 5 }));
+  if (encPool.length && rng.random() < 0.12) {
+    const pick = pickByWeight(rng, encPool);
+    const enc = DIVE_ENCOUNTERS.find((e) => e.id === pick.id);
+    if (enc?.branch) {
+      S.pendingDive = { encId: enc.id, name: enc.name, intro: enc.intro, options: enc.options };
+      return {
+        text: seasonMsg + formatCatch(f, size, value, first) + `\n\n${enc.emoji || '🌊'}【${enc.name}】${enc.intro}`,
+        consumed: true,
+        kind: 'fish',
+        fish_name: f.name,
+        rarity: f.rarity,
+        first,
+        branch: enc.id
+      };
+    }
+    if (enc) {
+      const parts = grantRewards(S, rng, enc.reward);
+      encounter = `\n${enc.emoji || '🌊'}【${enc.name}】${enc.text}` + (parts.length ? '\n🎁 获得 ' + parts.join('、') : '');
+    }
+  }
+
+  return {
+    text: seasonMsg + formatCatch(f, size, value, first) + milestoneLine(f, first, S) + encounter + ambience(loc, rng),
+    consumed: true,
+    kind: 'fish',
+    fish_name: f.name,
+    rarity: f.rarity,
+    first
+  };
+}
+
+function diveStart(S, n) {
+  if (S.pendingDive) return '你正停在一处遗迹面前——用 choose <编号> 选一个，或者 surface 上来。';
+  const locId = S.location_id;
+  if (!diveUnlocked(S, locId)) {
+    const need = fragsNeeded(LOCATIONS[locId]);
+    const have = S.map_fragments?.[locId] || 0;
+    return `🔒【${LOCATIONS[locId].name}】的潜水点还没解锁——先在水面钓鱼集碎片（已 ${have}/${need}）。`;
+  }
+  if ((S.oxygen || 0) <= 0) return '没有氧气瓶了。shop 里 buy oxygen 5（买 5 瓶 8 折）。';
+
+  n = Math.max(1, Math.min(10, n || 1));
+  const rng = new Rng(S.rngState, S.rngCalls);
+  const seg = [];
+  let done = 0;
+  let junk = 0;
+  const caught = {};
+
+  for (let i = 0; i < n; i++) {
+    const r = diveStep(S, rng);
+    if (!r.consumed) {
+      seg.push(r.text);
+      break;
+    }
+    done += 1;
+    if (r.kind === 'fish') {
+      caught[r.fish_name] = (caught[r.fish_name] || 0) + 1;
+      if (r.first || (RANK[r.rarity] ?? 0) >= 2 || r.branch) seg.push(r.text);
+    } else junk += 1;
+    if (r.branch) break;
+  }
+
+  S.rngState = rng.state;
+  S.rngCalls = rng.calls;
+
+  const haul = Object.entries(caught).map(([k, v]) => `${k}×${v}`).join('、') || '空手';
+  const head = `🤿 下潜 ${done} 次｜余氧 ${S.oxygen}`;
+  const tail = `🐟 渔获：${haul}${junk ? `（空潜 ${junk}）` : ''}`;
+  const body = seg.length ? seg.join('\n———\n') + '\n\n' : '';
+  return `${head}\n${body}${tail}` + (S.pendingDive ? '\n\n（用 choose <编号> 处理眼前的遗迹，或 surface 上来）' : '');
+}
+
+function diveChoose(S, idx) {
+  const p = S.pendingDive;
+  if (!p) return '现在没有等着你选的遗迹。';
+  const opt = p.options[Number(idx) - 1];
+  if (!opt) return `选 1-${p.options.length}。`;
+  const cost = opt.oxygen || 0;
+  if (cost > (S.oxygen || 0)) return `氧气不够：这需要 ${cost} 瓶，你还有 ${S.oxygen} 瓶。`;
+  S.oxygen -= cost;
+  S.pendingDive = null;
+  const rng = new Rng(S.rngState, S.rngCalls);
+  const parts = grantRewards(S, rng, opt.outcome?.reward);
+  S.rngState = rng.state;
+  S.rngCalls = rng.calls;
+  return (opt.outcome?.text || opt.label) + (parts.length ? '\n🎁 获得 ' + parts.join('、') : '') + `\n（余氧 ${S.oxygen}）`;
+}
+
 /* ---------- 指令 ---------- */
 function cStatus(S) {
   const baits =
@@ -492,6 +654,10 @@ function cStatus(S) {
   const items = Object.entries(S.items).filter(([, n]) => n > 0);
   if (items.length) extra += '\n物品：' + items.map(([k, n]) => `${ITEMS[k]?.name || k}×${n}`).join('、');
   if (S.pending_chests.length) extra += `\n📦 待开宝箱 ${S.pending_chests.length} 个（inventory 看，open 开）`;
+  const frags = Object.entries(S.map_fragments || {}).filter(([k, v]) => v > 0 && !diveUnlocked(S, k));
+  if (frags.length) extra += '\n🧩 藏宝图碎片：' + frags.map(([k, v]) => `${LOCATIONS[k].name} ${v}/${fragsNeeded(LOCATIONS[k])}`).join('、');
+  if ((S.dive_unlocked || []).length) extra += '\n🗺️ 能潜水的地方：' + S.dive_unlocked.map((l) => LOCATIONS[l].name).join('、');
+  if (S.oxygen > 0 || S.oxygen_ever) extra += `\n氧气瓶：${S.oxygen || 0}（dive 下水）`;
 
   return `【状态】${footer(S)}\n鱼饵：${baits}\n未卖渔获：${S.catch_inventory.length} 条 ｜ 总抛竿 ${S.stats.total_casts}${extra}`;
 }
@@ -505,10 +671,26 @@ function cShop(S) {
           : '无特殊效果'
       }`
   );
-  return `【商店】（buy <id> [数量]）\n${lines.join('\n')}\n老板搓了搓手：「好饵能让这片水里本来就有的鱼更肯上钩——可它变不出新鱼种。」`;
+  if ((S.dive_unlocked || []).length) {
+    lines.push(`${OXYGEN.id}　${OXYGEN.name}　${OXYGEN.cost}点　潜水用（买 5 瓶 8 折、10 瓶 7 折）`);
+  }
+  return `【商店】（buy <id> [数量]）\n${lines.join('\n')}\n老板搓了搓手：「好饵能让这片水里本来就有的鱼更肯上钩——可它变不出新鱼种。想要水下的稀客？买氧气，dive 下去。」`;
 }
 
 function cBuy(S, baitId, qty) {
+  if (baitId === 'oxygen' || baitId === 'oxygen_tank' || baitId === '氧气瓶') {
+    if (!(S.dive_unlocked || []).length) return '现在还买不了氧气瓶——先在水面钓出藏宝图碎片，解锁第一个潜水点，店里才会上架。';
+    const n = Math.max(1, parseInt(qty, 10) || 1);
+    const disc = n >= 10 ? 0.7 : n >= 5 ? 0.8 : 1;
+    const base = OXYGEN.cost * n;
+    const cost = Math.round(base * disc);
+    if (S.points < cost) return `点数不够：氧气瓶×${n} 需 ${cost} 点，你只有 ${S.points}。`;
+    S.points -= cost;
+    S.oxygen = (S.oxygen || 0) + n;
+    S.oxygen_ever = true;
+    return `买了氧气瓶×${n}，花 ${cost} 点${disc < 1 ? `（套餐省 ${base - cost} 点）` : ''}。剩 ${S.points} 点，现有氧气瓶×${S.oxygen}。`;
+  }
+
   const b = BAITS[baitId];
   if (!b) return `没有这种鱼饵：${baitId}。用 shop 看货架。`;
   qty = Math.max(1, parseInt(qty, 10) || 1);
@@ -698,6 +880,16 @@ export function cmd(S, line = '') {
       if (Number.isFinite(n) && n > 1) return castMany(S, baitId, n);
       return castMany(S, baitId || rest[0], 1);
     }
+    case 'dive': {
+      const n = parseInt(rest[0], 10);
+      return diveStart(S, Number.isFinite(n) ? n : 1);
+    }
+    case 'choose':
+      return diveChoose(S, rest[0]);
+    case 'surface':
+      if (!S.pendingDive) return '你现在不在水下。';
+      S.pendingDive = null;
+      return '你浮上来了。';
     case 'open':
       return openChest(S, rest[0]);
     default:

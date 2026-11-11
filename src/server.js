@@ -18,6 +18,7 @@ import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from '.
 import { startCall, currentCall, callTurn, endCall } from './call.js';
 import { cmd as fishCmd, newState as fishNew } from './game/fishing.js';
 import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game/mono/engine.js';
+import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -725,6 +726,34 @@ app.get('/api/heartbeat', async (req, res) => {
     if (!spoke) {
       const invited = await maybeCallInvite(state).catch(() => false);
       if (invited) console.log('[call] 主动拨号');
+
+      /* 他可能自己跑去玩一会儿，回来留一句 */
+      const played = await maybePlayAlone().catch(() => null);
+      if (played && !spoke) {
+        const { data: convRow } = await supabase
+          .from('conversations')
+          .select('id')
+          .order('updated_at', { ascending: false })
+          .limit(1);
+        const cid = convRow?.[0]?.id;
+        if (cid) {
+          const { data: saved } = await supabase
+            .from('messages')
+            .insert({
+              conversation_id: cid,
+              role: 'assistant',
+              content: played.text,
+              meta: { game: played.game }
+            })
+            .select()
+            .single();
+          if (saved) {
+            spoke = saved;
+            await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', cid);
+            console.log('[game] 自己去玩了：', played.game);
+          }
+        }
+      }
     }
 
     /* 深夜了，先看看要不要劝睡 */
@@ -1527,6 +1556,39 @@ async function pickProactiveAsk() {
   return pick;
 }
 
+
+/* 他自己去玩一会儿（钓鱼 / 种田），回来留一句 */
+async function maybePlayAlone() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'gamePlay').maybeSingle();
+  const last = data?.value?.lastAt || 0;
+  if (Date.now() - last < 5 * 3600 * 1000) return null;
+  if (Math.random() > 0.35) return null;
+
+  await supabase.from('app_settings').upsert({ key: 'gamePlay', value: { lastAt: Date.now() }, updated_at: new Date().toISOString() });
+
+  const pick = Math.random() < 0.5 ? 'farm' : 'fishing';
+  let out = '';
+
+  if (pick === 'farm') {
+    const F = await loadFarm();
+    const { ripened } = farmTick(F);
+    if (ripened.length) out = farmCmd(F, 'harvest');
+    else {
+      const seeds = farmCmd(F, 'seeds').split('\n').slice(1);
+      const line = seeds.find((l) => l.includes('　'));
+      if (line && F.coins > 8) out = farmCmd(F, 'plant ' + line.split('　')[0]);
+      else out = farmCmd(F, 'status');
+    }
+    await saveFarm(F);
+  } else {
+    const S = await loadFishing();
+    out = fishCmd(S, 'cast 3');
+    await saveFishing(S);
+  }
+
+  return { game: pick, text: out.length > 400 ? out.slice(0, 400) + '…' : out };
+}
+
 async function timingGate() {
   try {
     const { data: devRow } = await supabase.from('app_settings').select('value').eq('key', 'device').maybeSingle();
@@ -2223,6 +2285,31 @@ app.post('/api/mono/cmd', async (req, res) => {
   const output = monoCmd(S, line);
   await saveMono(S);
   res.json({ output, game: monoInfo(S) });
+});
+
+
+/* 小田：他自己的种田游戏 */
+const FARM_KEY = 'farm';
+
+async function loadFarm() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', FARM_KEY).maybeSingle();
+  return data?.value || newFarm();
+}
+
+async function saveFarm(F) {
+  await supabase.from('app_settings').upsert({ key: FARM_KEY, value: F, updated_at: new Date().toISOString() });
+}
+
+app.get('/api/farm', async (req, res) => {
+  const F = await loadFarm();
+  res.json({ farm: farmInfo(F) });
+});
+
+app.post('/api/farm/cmd', async (req, res) => {
+  const F = await loadFarm();
+  const output = farmCmd(F, String(req.body?.line || 'status'));
+  await saveFarm(F);
+  res.json({ output, farm: farmInfo(F) });
 });
 
 app.listen(PORT, () => {
