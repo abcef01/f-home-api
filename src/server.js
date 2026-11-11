@@ -2272,7 +2272,8 @@ app.get('/api/mono', async (req, res) => {
 app.post('/api/mono/new', async (req, res) => {
   const level = Math.min(6, Math.max(1, Number(req.body?.level) || 3));
   const redLines = Array.isArray(req.body?.redLines) ? req.body.redLines : ['后庭'];
-  const S = monoNew({ level, redLines });
+  const safeword = String(req.body?.safeword || '停一下').trim().slice(0, 12);
+  const S = monoNew({ level, redLines, safeword });
   await saveMono(S);
   res.json({ game: monoInfo(S), output: monoCmd(S, 'status') });
 });

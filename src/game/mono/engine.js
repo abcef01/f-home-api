@@ -81,7 +81,7 @@ class Rng {
 }
 
 /* ---------- 状态 ---------- */
-export function newGame({ seed = Date.now() >>> 0, level = 3, redLines = [] } = {}) {
+export function newGame({ seed = Date.now() >>> 0, level = 3, redLines = [], safeword = '停一下' } = {}) {
   const clean = redLines.filter((k) => KINKS.includes(k));
   return {
     version: 1,
@@ -90,6 +90,7 @@ export function newGame({ seed = Date.now() >>> 0, level = 3, redLines = [] } = 
     rngCalls: 0,
     level, // 1-6，对应任务库强度
     redLines: clean,
+    safeword: String(safeword || '停一下').trim().slice(0, 12),
     board: BOARD,
     players: [
       { id: 0, name: '你', coins: 10, pos: 0, owned: [], cards: [], jail: 0, done: 0 },
@@ -136,10 +137,11 @@ export function cmd(S, line = '') {
   const lower = raw.toLowerCase();
 
   /* 任何时候 404 都立刻停 */
-  if (lower === '404' || raw.includes('404')) {
+  const sw = String(S.safeword || '').trim().toLowerCase();
+  if (lower === '404' || raw.includes('404') || (sw && lower === sw)) {
     S.phase = 'stopped';
     S.pending = null;
-    return '🛑 已停。全部停止，什么都不用做了。\n（想继续再说 start，会重新开一局。）';
+    return '🛑 已停。全部停止，什么都不用做了。\n（想继续再说 start，会重新开一局；安全词现在是「' + (S.safeword || '404') + '」，404 也一直有效。）';
   }
 
   const [verbRaw, ...rest] = raw.split(/\s+/);
@@ -159,6 +161,13 @@ export function cmd(S, line = '') {
 
   if (verb === 'board') {
     return '【棋盘】\n' + BOARD.map((b) => `${String(b.i).padStart(2)}. ${b.name}`).join('\n');
+  }
+
+  if (verb === 'safeword' || verb === 'safe') {
+    const w = rest.join(' ').trim().slice(0, 12);
+    if (!w) return '现在用的安全词是「' + (S.safeword || '404') + '」。要换就说 safeword 新词。';
+    S.safeword = w;
+    return '安全词改成「' + w + '」了。（404 也一直有效）';
   }
 
   if (verb === 'level') {
@@ -224,6 +233,7 @@ function statusText(S) {
     `${p.name} ${p.coins} 币 · 第 ${p.pos} 格 ｜ ${o.name} ${o.coins} 币 · 第 ${o.pos} 格`,
     `进度：${S.rolls}/${S.maxRolls * 2} 次掷骰`,
     S.redLines.length ? `红线：${S.redLines.join('、')}` : '红线：未设置（后庭默认关）',
+    `安全词：「${S.safeword || '404'}」（说出口立刻停）`,
     S.pending ? `待处理：${S.pending.text}` : ''
   ]
     .filter(Boolean)
