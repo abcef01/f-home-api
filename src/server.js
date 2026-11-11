@@ -21,7 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
-import { load as loadDiary, save as saveDiary, addEntry, addComment, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
+import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
@@ -2513,7 +2513,19 @@ app.post('/api/quests/redeem', async (req, res) => {
    ============================================================ */
 app.get('/api/diary', async (req, res) => {
   const D = await loadDiary();
-  res.json(monthView(D, req.query.month));
+  res.json({ ...monthView(D, req.query.month), ...notesView(D) });
+});
+
+app.post('/api/diary/note', async (req, res) => {
+  try {
+    const D = await loadDiary();
+    const n = addNote(D, { text: req.body?.text, who: req.body?.who === 'ta' ? 'ta' : 'me' });
+    await saveDiary(D);
+    const month = String(req.body?.month || '').slice(0, 7) || new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 7);
+    res.json({ note: n, ...monthView(D, month), ...notesView(D) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.post('/api/diary/entry', async (req, res) => {

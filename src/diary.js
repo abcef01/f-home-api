@@ -78,21 +78,23 @@ export async function maybeReadAndComment() {
   const MIN_AGE = 25 * 60 * 1000; // 至少放了 25 分钟
   const MAX_AGE = 30 * 60 * 60 * 1000; // 只回一天以内的
 
-  /* 一天最多留两句，别刷 */
+  /* 不再限制每天几句，靠随机间隔自然拉开 */
   D.commented = D.commented || {};
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-  if ((D.commented[today] || 0) >= 2) return null;
 
-  /* 不管有没有留言，都把下一次翻的时间往后推一段随机时长 */
-  const gapMin = 25 + Math.random() * 75;
-  D.nextReadAt = now + gapMin * 60 * 1000;
+  /* 下一次翻：20–70 分钟之间的随机秒数（不是整点，也不是固定差） */
+  const gapMs = (20 + Math.random() * 50) * 60 * 1000 + Math.random() * 60 * 1000;
+  D.nextReadAt = now + gapMs;
 
   const candidates = D.entries.filter((e) => {
-    if (e.who !== 'me') return false;
     const age = now - e.at;
     if (age < MIN_AGE || age > MAX_AGE) return false;
-    const hasTaComment = (e.comments || []).some((c) => c.who === 'ta');
-    return !hasTaComment;
+    const comments = e.comments || [];
+    /* 你写的、他还没回过的 */
+    if (e.who === 'me' && !comments.some((c) => c.who === 'ta')) return true;
+    /* 他写的那条下面，你留了话而他还没接 */
+    if (e.who === 'ta' && comments.some((c) => c.who === 'me') && !comments.some((c) => c.who === 'ta')) return true;
+    return false;
   });
 
   if (!candidates.length) {
@@ -126,12 +128,40 @@ export async function autoComment(entry) {
     const r = await callModel({
       target: 'memory',
       system:
-        '你在读对方写的手帐。留一句话——像在页边用铅笔写的批注：可以接一句、问一句、或者只说你也想到了什么。二十字上下，不要总结，不要评价他的情绪，不要用"抱抱""加油"。只输出这句话。',
-      messages: [{ role: 'user', content: entry.text }],
+        '你在读对方写的手帐，然后留一句话。' +
+        '要求：' +
+        '① 一到两句，二十五到四十五个字，说完整，不要只蹦两三个字；' +
+        '② 用日常说话的方式，让人一眼看懂你在说什么；' +
+        '③ 可以接他的细节（那只猫、那半个西瓜），可以问一句，也可以说你自己这边的小事；' +
+        '④ 不要总结他、不要评价他的情绪、不要用"抱抱""加油""辛苦啦"；' +
+        '⑤ 不要用省略号和破折号制造文艺感。' +
+        '只输出这句话。',
+      messages: [
+        {
+          role: 'user',
+          content:
+            entry.text +
+            ((entry.comments || []).length
+              ? '\n\n他后面还留了：' + entry.comments.map((c) => c.text).join('；')
+              : '')
+        }
+      ],
       temperature: 0.9,
-      maxTokens: 200
+      maxTokens: 500
     });
-    const t = (r.content || '').trim().slice(0, 80);
+    let t = (r.content || '').trim().replace(/^["'「』]|["'」』]$/g, '').slice(0, 90);
+
+    if (!t) {
+      /* 偶尔会空回，再要一次 */
+      const r2 = await callModel({
+        target: 'memory',
+        system: '用一句话（25-45 字）回应这句话，像朋友在页边写的批注。只输出这句话。',
+        messages: [{ role: 'user', content: entry.text }],
+        temperature: 0.9,
+        maxTokens: 400
+      });
+      t = (r2.content || '').trim().slice(0, 90);
+    }
     if (!t) return null;
     return { who: 'ta', text: t, at: Date.now() };
   } catch (err) {
@@ -146,6 +176,22 @@ export function toggleLike(D, id, who = 'me') {
   e.likes = e.likes || [];
   e.likes = e.likes.includes(who) ? e.likes.filter((x) => x !== who) : [...e.likes, who];
   return e;
+}
+
+/* ---------- 纸条：碎碎念，比手帐短、比聊天轻 ---------- */
+export function addNote(D, { text, who = 'me' }) {
+  const t = String(text || '').trim().slice(0, 120);
+  if (!t) throw new Error('写点什么');
+  D.notes = D.notes || [];
+  const n = { id: crypto.randomUUID().slice(0, 8), who, text: t, at: Date.now() };
+  D.notes.push(n);
+  if (D.notes.length > 500) D.notes = D.notes.slice(-500);
+  return n;
+}
+
+export function notesView(D) {
+  const list = (D.notes || []).slice(-60);
+  return { notes: list, text: list.map((n) => `${n.who === 'me' ? '你' : '他'}：${n.text}`).join('\n') };
 }
 
 /* 按月取：month 形如 2026-11 */
@@ -170,10 +216,17 @@ function renderMonth(list) {
 export async function diaryPromptBlock() {
   const D = await load();
   const recent = D.entries.slice(-6);
-  if (!recent.length) return '';
+  const notes = (D.notes || []).slice(-6);
+  if (!recent.length && !notes.length) return '';
 
-  const lines = recent.map((e) => `- ${e.date} ${e.who === 'me' ? '他' : '你'}：${e.text}`).join('\n');
-  return `\n\n【手帐最近几页】\n${lines}\n可以聊到这些事，但别像在核对账本。`;
+  const lines = recent.map((e) => {
+    const cs = (e.comments || []).map((c) => `（${c.who === 'me' ? '他' : '你'}留：${c.text}）`).join('');
+    return `- ${e.date} ${e.who === 'me' ? '他' : '你'}：${e.text}${cs}`;
+  });
+
+  const noteLines = notes.map((n) => `- [纸条] ${n.who === 'me' ? '他' : '你'}：${n.text}`);
+
+  return `\n\n【手帐与纸条】\n${[...lines, ...noteLines].join('\n')}\n这些他都写给你看过。可以接话，别像在核对账本。`;
 }
 
 /* 他自己写一页（心跳里偶发） */
