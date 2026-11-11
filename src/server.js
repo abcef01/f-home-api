@@ -20,6 +20,7 @@ import { cmd as fishCmd, newState as fishNew } from './game/fishing.js';
 import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game/mono/engine.js';
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
+import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -1568,7 +1569,7 @@ async function maybePlayAlone() {
   await supabase.from('app_settings').upsert({ key: 'gamePlay', value: { lastAt: Date.now() }, updated_at: new Date().toISOString() });
 
   const roll = Math.random();
-  const pick = roll < 0.34 ? 'farm' : roll < 0.67 ? 'fishing' : 'burger';
+  const pick = roll < 0.28 ? 'farm' : roll < 0.5 ? 'fishing' : roll < 0.75 ? 'burger' : 'pond';
   let out = '';
 
   if (pick === 'farm') {
@@ -1586,6 +1587,16 @@ async function maybePlayAlone() {
     const S = await loadFishing();
     out = fishCmd(S, 'cast 3');
     await saveFishing(S);
+  } else if (pick === 'pond') {
+    const S = await loadPond();
+    /* 他会看池子、补点水草、偶尔换水 */
+    const r = (seed) => Math.abs(Math.sin(seed * 12.9898 + S.day) * 43758.5453) % 1;
+    if (r(1) < 0.4) out = pondCmd(S, 'wait 3');
+    else if (S.water && S.water.oxygen < 4) out = pondCmd(S, 'add weed 2');
+    else if (S.pop && S.pop.algae > 150) out = pondCmd(S, 'skim');
+    else if (S.water && S.water.clarity < 0.35) out = pondCmd(S, 'water');
+    else out = pondCmd(S, 'status');
+    await savePond(S);
   } else {
     const S = await loadBurger();
     /* 简单的自动做单：按订单烤、叠、出餐 */
@@ -2356,6 +2367,31 @@ app.post('/api/burger/cmd', async (req, res) => {
   const output = burgerCmd(S, String(req.body?.line || 'status'));
   await saveBurger(S);
   res.json({ output, game: burgerInfo(S) });
+});
+
+
+/* 瓶中生态 */
+const POND_KEY = 'pond';
+
+async function loadPond() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', POND_KEY).maybeSingle();
+  return data?.value || newPond();
+}
+
+async function savePond(S) {
+  await supabase.from('app_settings').upsert({ key: POND_KEY, value: S, updated_at: new Date().toISOString() });
+}
+
+app.get('/api/pond', async (req, res) => {
+  const S = await loadPond();
+  res.json({ pond: pondInfo(S) });
+});
+
+app.post('/api/pond/cmd', async (req, res) => {
+  const S = await loadPond();
+  const output = pondCmd(S, String(req.body?.line || 'status'));
+  await savePond(S);
+  res.json({ output, pond: pondInfo(S) });
 });
 
 app.listen(PORT, () => {
