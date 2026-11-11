@@ -192,16 +192,57 @@ function extractSticker(text, list) {
 /* ============================================================
    表情包
    ------------------------------------------------------------
-   图片存 Supabase Storage（bucket: stickers，公开可读），
+   图片存 Supabase Storage（bucket: stickers，私有，按需签名），
    列表存 app_settings 的 stickers 键，不需要额外建表。
    ============================================================ */
 const STICKER_BUCKET = 'stickers';
 
+/* 把一个 storage 路径签成 1 小时有效的临时链接（带内存缓存） */
+const signedCache = new Map();
+const SIGN_TTL = 3600;
+
+function pathFromUrl(url) {
+  if (!url) return null;
+  const marker = '/storage/v1/object/public/' + STICKER_BUCKET + '/';
+  const i = String(url).indexOf(marker);
+  if (i >= 0) return decodeURIComponent(String(url).slice(i + marker.length).split('?')[0]);
+  const j = String(url).indexOf('/storage/v1/object/sign/' + STICKER_BUCKET + '/');
+  if (j >= 0) return decodeURIComponent(String(url).slice(j + ('/storage/v1/object/sign/' + STICKER_BUCKET + '/').length).split('?')[0]);
+  return null;
+}
+
+async function signPath(path) {
+  if (!path) return null;
+  const hit = signedCache.get(path);
+  if (hit && hit.exp > Date.now() + 60_000) return hit.url;
+
+  const { data, error } = await supabase.storage.from(STICKER_BUCKET).createSignedUrl(path, SIGN_TTL);
+  if (error || !data?.signedUrl) return null;
+  signedCache.set(path, { url: data.signedUrl, exp: Date.now() + SIGN_TTL * 1000 });
+  return data.signedUrl;
+}
+
+/* 把任意存着的图片地址换成一个能用的临时链接 */
+async function signUrl(url) {
+  if (!url) return url;
+  const path = pathFromUrl(url);
+  if (!path) return url;
+  return (await signPath(path)) || url;
+}
+
 async function ensureBucket() {
   const { data } = await supabase.storage.listBuckets();
-  if ((data || []).some((b) => b.name === STICKER_BUCKET)) return;
+  const existing = (data || []).find((b) => b.name === STICKER_BUCKET);
+  if (existing) {
+    /* 老桶之前是公开的，这里顺手改成私有（幂等） */
+    if (existing.public) {
+      await supabase.storage.updateBucket(STICKER_BUCKET, { public: false }).catch(() => {});
+      console.log('[storage] stickers 桶已改为私有');
+    }
+    return;
+  }
   const { error } = await supabase.storage.createBucket(STICKER_BUCKET, {
-    public: true,
+    public: false, /* 私有：只通过带口令的接口取签名链接 */
     fileSizeLimit: '4MB'
   });
   if (error && !/already exists/i.test(error.message)) throw new Error(error.message);
@@ -222,7 +263,11 @@ async function writeStickers(list) {
 app.get('/api/stickers', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
   try {
-    res.json({ stickers: await readStickers() });
+    const list = await readStickers();
+    const out = await Promise.all(
+      list.map(async (x) => ({ ...x, url: (await signUrl(x.url)) || x.url }))
+    );
+    res.json({ stickers: out });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -287,7 +332,10 @@ app.delete('/api/stickers/:id', async (req, res) => {
 app.get('/api/avatars', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
   const { data } = await supabase.from('app_settings').select('value').eq('key', 'avatars').maybeSingle();
-  res.json({ avatars: data?.value || {} });
+  const raw = data?.value || {};
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) out[k] = (await signUrl(v)) || v;
+  res.json({ avatars: out });
 });
 
 app.post('/api/avatars', async (req, res) => {
@@ -480,6 +528,19 @@ app.delete('/api/conversations/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+/* 消息里的图片/表情也换成临时链接 */
+async function signMessages(rows) {
+  return Promise.all(
+    (rows || []).map(async (m) => {
+      if (!m.meta) return m;
+      const meta = { ...m.meta };
+      if (meta.image) meta.image = (await signUrl(meta.image)) || meta.image;
+      if (meta.sticker) meta.sticker = (await signUrl(meta.sticker)) || meta.sticker;
+      return { ...m, meta };
+    })
+  );
+}
+
 app.get('/api/conversations/:id/messages', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
   const { data, error } = await supabase
@@ -488,7 +549,7 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
     .eq('conversation_id', req.params.id)
     .order('created_at', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
-  res.json({ messages: data });
+  res.json({ messages: await signMessages(data) });
 });
 
 /* ============================================================
