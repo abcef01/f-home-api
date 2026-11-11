@@ -17,6 +17,7 @@ import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore 
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { startCall, currentCall, callTurn, endCall } from './call.js';
 import { cmd as fishCmd, newState as fishNew } from './game/fishing.js';
+import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game/mono/engine.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
@@ -2182,6 +2183,46 @@ app.post('/api/fishing/new', async (req, res) => {
   const S = fishNew(seed);
   await saveFishing(S);
   res.json({ state: S, status: fishCmd(S, 'status'), seed });
+});
+
+
+/* ============================================================
+   涩涩大富翁（移植自 RennAkira/spicy-monopoly 的玩法与任务库）
+   红线在引擎里过滤；任何输入 404 立刻停。
+   ============================================================ */
+const MONO_KEY = 'mono';
+
+async function loadMono() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', MONO_KEY).maybeSingle();
+  return data?.value || null;
+}
+
+async function saveMono(S) {
+  await supabase.from('app_settings').upsert({ key: MONO_KEY, value: S, updated_at: new Date().toISOString() });
+}
+
+app.get('/api/mono', async (req, res) => {
+  const S = await loadMono();
+  if (!S) return res.json({ game: null });
+  res.json({ game: monoInfo(S) });
+});
+
+app.post('/api/mono/new', async (req, res) => {
+  const level = Math.min(6, Math.max(1, Number(req.body?.level) || 3));
+  const redLines = Array.isArray(req.body?.redLines) ? req.body.redLines : ['后庭'];
+  const S = monoNew({ level, redLines });
+  await saveMono(S);
+  res.json({ game: monoInfo(S), output: monoCmd(S, 'status') });
+});
+
+app.post('/api/mono/cmd', async (req, res) => {
+  const S = await loadMono();
+  if (!S) return res.status(400).json({ error: '还没开局，先 new 一局' });
+  const line = String(req.body?.line || '').trim();
+  if (!line) return res.status(400).json({ error: '要做什么？' });
+  const output = monoCmd(S, line);
+  await saveMono(S);
+  res.json({ output, game: monoInfo(S) });
 });
 
 app.listen(PORT, () => {
