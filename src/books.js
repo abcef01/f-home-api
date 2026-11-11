@@ -320,12 +320,13 @@ export async function getMarks(id) {
   return readMarks(id);
 }
 
-export async function addAnnotation(id, { chapter = 0, quote = '', note = '', who = 'me' }) {
+export async function addAnnotation(id, { chapter = 0, quote = '', note = '', who = 'me', replyTo = null }) {
   const marks = await readMarks(id);
   const a = {
     id: crypto.randomUUID().slice(0, 8),
     chapter: Number(chapter) || 0,
     who,
+    replyTo,
     quote: String(quote || '').slice(0, 400),
     note: String(note || '').slice(0, 400),
     at: Date.now()
@@ -362,6 +363,66 @@ export async function removeBookmark(id, bid) {
   marks.bookmarks = marks.bookmarks.filter((x) => x.id !== bid);
   await writeMarks(id, marks);
   return { ok: true };
+}
+
+/* 你在书上批了一句，他可能接一句 */
+export async function maybeReplyAnnotation() {
+  const list = await readMeta();
+  if (!list.length) return null;
+
+  const book = list[0];
+  const marks = await readMarks(book.id);
+  const now = Date.now();
+
+  const mine = marks.annotations.filter(
+    (a) => a.who === 'me' && now - a.at < 3 * 24 * 3600 * 1000 && now - a.at > 20 * 60 * 1000
+  );
+  const targets = mine.filter((a) => !marks.annotations.some((b2) => b2.who === 'ta' && b2.replyTo === a.id));
+  if (!targets.length) return null;
+
+  if (book.replyNextAt && now < book.replyNextAt) return null;
+  if (Math.random() > 0.5) return null;
+
+  const target = targets[targets.length - 1];
+  let chapterText = '';
+  try {
+    const ch = await getChapter(book.id, target.chapter);
+    chapterText = String(ch.text || '').slice(0, 900);
+  } catch {
+    /* 没正文也能回 */
+  }
+
+  try {
+    const r = await callModel({
+      target: 'memory',
+      system:
+        '你在读一本书，对方在页边写了批注。你接一句，像另一个人在同一页写下的铅笔字：' +
+        '一到两句，二十到四十字，具体，口语。不要评价他的想法，不要总结。只输出这句。',
+      messages: [
+        {
+          role: 'user',
+          content:
+            '书：《' + book.title + '》第 ' + (target.chapter + 1) + ' 章\n' +
+            (chapterText ? '正文：' + chapterText + '\n' : '') +
+            '他批注：' + (target.quote ? '「' + target.quote + '」' : '') + target.note
+        }
+      ],
+      temperature: 0.9,
+      maxTokens: 400
+    });
+    const note = String(r.content || '').trim().slice(0, 90);
+    if (!note) return null;
+
+    return await addAnnotation(book.id, {
+      chapter: target.chapter,
+      quote: '',
+      note,
+      who: 'ta',
+      replyTo: target.id
+    });
+  } catch {
+    return null;
+  }
 }
 
 /* 他自己在书上留一句（心跳里偶发，同一章只留一次） */

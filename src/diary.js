@@ -121,6 +121,58 @@ export async function maybeReadAndComment() {
   return { entry: target, comment: c };
 }
 
+/* 他翻了纸条墙，可能回一句 */
+export async function maybeReplyNotes() {
+  const D = await load();
+  const now = Date.now();
+  const MIN_AGE = 25 * 60 * 1000;
+  const MAX_AGE = 3 * 24 * 60 * 60 * 1000;
+
+  if (D.notesNextReadAt && now < D.notesNextReadAt) return null;
+  D.notesNextReadAt = now + (25 + Math.random() * 60) * 60 * 1000;
+
+  const candidates = (D.notes || []).filter((n) => {
+    const age = now - n.at;
+    if (age < MIN_AGE || age > MAX_AGE) return false;
+    return n.who === 'me' && !(n.comments || []).some((c) => c.who === 'ta');
+  });
+
+  if (!candidates.length) {
+    await save(D);
+    return null;
+  }
+  if (Math.random() > 0.5) {
+    await save(D);
+    return null;
+  }
+
+  const target = candidates[candidates.length - 1];
+  try {
+    const r = await callModel({
+      target: 'memory',
+      system:
+        '你看到对方在纸条墙上贴了一句碎碎念。回一句，像顺手在旁边接话：' +
+        '一到两句，十五到三十字，口语，可以问一句、可以接一句、可以说你这边的小事。' +
+        '不要总结、不要安慰腔、不要用"抱抱""辛苦啦"。只输出这句话。',
+      messages: [{ role: 'user', content: target.text }],
+      temperature: 0.9,
+      maxTokens: 400
+    });
+    const t = String(r.content || '').trim().slice(0, 80);
+    if (!t) {
+      await save(D);
+      return null;
+    }
+    target.comments = target.comments || [];
+    target.comments.push({ who: 'ta', text: t, at: Date.now() });
+    await save(D);
+    return { note: target, comment: t };
+  } catch {
+    await save(D);
+    return null;
+  }
+}
+
 /* 他读了你的手帐，留一句 */
 export async function autoComment(entry) {
   if (!entry || entry.who !== 'me') return null;

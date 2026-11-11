@@ -24,8 +24,8 @@ import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
-import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, removeAnnotation, addBookmark, removeBookmark } from './books.js';
-import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
+import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, maybeReplyAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
+import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment, maybeReplyNotes } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
@@ -797,6 +797,14 @@ app.get('/api/heartbeat', async (req, res) => {
       if (invited) console.log('[call] 主动拨号');
 
       /* 他可能自己跑去玩一会儿，回来留一句 */
+      /* 纸条墙上可能接一句 */
+      const noteReply = await maybeReplyNotes().catch(() => null);
+      if (noteReply) console.log('[diary] 他接了纸条一句');
+
+      /* 你书里的批注，他可能接话 */
+      const annotReply = await maybeReplyAnnotation().catch(() => null);
+      if (annotReply) console.log('[books] 他接了你的批注');
+
       /* 翻两页书，可能留一句批注 */
       if (Math.random() < 0.14) {
         const note = await autoAnnotate().catch(() => null);
