@@ -61,6 +61,42 @@ export function addComment(D, id, { text, who = 'me' }) {
   return e;
 }
 
+/* 他过一会儿翻到手帐，觉得有话想说才留一句。
+   不像客服回工单：要先放一阵，而且一次只回一条。 */
+export async function maybeReadAndComment() {
+  const D = await load();
+  const now = Date.now();
+  const MIN_AGE = 25 * 60 * 1000; // 至少放了 25 分钟
+  const MAX_AGE = 30 * 60 * 60 * 1000; // 只回一天以内的
+
+  /* 一天最多留两句，别刷 */
+  D.commented = D.commented || {};
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  if ((D.commented[today] || 0) >= 2) return null;
+
+  const candidates = D.entries.filter((e) => {
+    if (e.who !== 'me') return false;
+    const age = now - e.at;
+    if (age < MIN_AGE || age > MAX_AGE) return false;
+    const hasTaComment = (e.comments || []).some((c) => c.who === 'ta');
+    return !hasTaComment;
+  });
+
+  if (!candidates.length) return null;
+  /* 不是每次都看；看了也不是每条都想说话 */
+  if (Math.random() > 0.45) return null;
+
+  const target = candidates[candidates.length - 1];
+  const c = await autoComment(target);
+  if (!c) return null;
+
+  target.comments = target.comments || [];
+  target.comments.push(c);
+  D.commented[today] = (D.commented[today] || 0) + 1;
+  await save(D);
+  return { entry: target, comment: c };
+}
+
 /* 他读了你的手帐，留一句 */
 export async function autoComment(entry) {
   if (!entry || entry.who !== 'me') return null;

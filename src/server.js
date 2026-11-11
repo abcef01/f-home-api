@@ -21,7 +21,7 @@ import { cmd as monoCmd, newGame as monoNew, gameInfo as monoInfo } from './game
 import { cmd as farmCmd, newFarm, farmInfo, tick as farmTick } from './game/farm.js';
 import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from './game/burger.js';
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
-import { load as loadDiary, save as saveDiary, addEntry, addComment, autoComment, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite } from './diary.js';
+import { load as loadDiary, save as saveDiary, addEntry, addComment, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
@@ -732,6 +732,10 @@ app.get('/api/heartbeat', async (req, res) => {
       if (invited) console.log('[call] 主动拨号');
 
       /* 他可能自己跑去玩一会儿，回来留一句 */
+      /* 翻翻手帐，可能回一句 */
+      const commented = await maybeReadAndComment().catch(() => null);
+      if (commented) console.log('[diary] 他回了一句：', commented.comment.text);
+
       /* 偶尔在手帐上写一页 */
       if (Math.random() < 0.18) {
         const wrote = await diaryAutowrite().catch(() => null);
@@ -2522,15 +2526,7 @@ app.post('/api/diary/entry', async (req, res) => {
       image: req.body?.image || null
     });
 
-    /* 他读一眼，留一句（只在你写的时候） */
-    if (e.who === 'me') {
-      const c = await autoComment(e);
-      if (c) {
-        e.comments = e.comments || [];
-        e.comments.push(c);
-      }
-    }
-
+    /* 不立刻回。他会在之后某个心跳里自己翻到。 */
     await saveDiary(D);
     res.json({ entry: e, ...monthView(D, e.date.slice(0, 7)) });
   } catch (e) {
