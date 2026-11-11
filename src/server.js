@@ -648,6 +648,8 @@ app.get('/api/heartbeat', async (req, res) => {
     let spoke = null;
     if (byAction.contact && (await timingGate())) {
       /* 找最近一个会话，把话放进那里 */
+      /* 主动开口时，有时会顺便要点什么 */
+      const proactiveAsk = await pickProactiveAsk().catch(() => null);
       const { data: convs } = await supabase
         .from('conversations')
         .select('id')
@@ -666,7 +668,12 @@ app.get('/api/heartbeat', async (req, res) => {
 
         const history = (recent || []).reverse().map((m) => ({ role: m.role, content: m.content }));
         const reply = await callModel({
-          system: params.systemPrompt + ctx + '\n\n' + PROACTIVE_PROMPT,
+          system:
+            params.systemPrompt +
+            ctx +
+            '\n\n' +
+            PROACTIVE_PROMPT +
+            (proactiveAsk ? '\n\n这次你想要：' + ASK_CN[proactiveAsk] + '。用一句话自然地说出来，别太直白。' : ''),
           messages: [...history, { role: 'user', content: '（沉默中，你可以先开口）' }],
           temperature: Math.min(1.2, params.temperature + 0.1)
         });
@@ -681,7 +688,7 @@ app.get('/api/heartbeat', async (req, res) => {
               content: text.slice(0, 400),
               model: reply.model,
               tokens: reply.tokens,
-              meta: { proactive: true }
+              meta: { proactive: true, ...(proactiveAsk ? { ask: proactiveAsk } : {}) }
             })
             .select()
             .single();
@@ -1069,7 +1076,19 @@ app.post('/api/chat', async (req, res) => {
     const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
-    const callRule = `\n\n偶尔你就是想听听对方的声音。想的时候，另起一段只写 [[call]]，系统会给对方弹一个来电。比 [[watch]] 更少用。`;
+    const callRule = `
+偶尔你会想从对方那里要点什么。这时候另起一段，只写一个标记，系统会帮你去问：
+
+[[watch]]  想看他屏幕上的东西
+[[call]]   想给他打个电话
+[[where]]  想知道他现在在哪
+[[listen]] 想听听他那儿的声音
+[[pic]]    想让他给你发张照片
+
+规矩：
+- 一次最多一个，而且大部分时候什么都不用要；
+- 刚用过、或者对方已经拒绝过，就不要连着再要；
+- 要得自然一点，先说一句话，再另起一行放标记。不要为了要而说。`;
     const watchRule = `\n\n你偶尔会想知道对方在做什么。想的时候，另起一段只写 [[watch]]，系统会去问对方要不要共享屏幕。不要频繁用。`;
     /* 药丸：取到就立刻焚掉，保证只生效一次 */
     const pillText = await pillPromptBlock();
@@ -1119,10 +1138,10 @@ app.post('/api/chat', async (req, res) => {
     if (msgs.length) {
       const last = msgs[msgs.length - 1];
       if (last.role === 'user') {
-        if (typeof last.content === 'string') last.content += COT_QUALITY;
+        if (typeof last.content === 'string') last.content += COT_QUALITY + WANT_HINT;
         else if (Array.isArray(last.content)) {
           const t = last.content.find((p) => p.type === 'text');
-          if (t) t.text += COT_QUALITY;
+          if (t) t.text += COT_QUALITY + WANT_HINT;
         }
       }
     }
@@ -1157,6 +1176,7 @@ app.post('/api/chat', async (req, res) => {
     }
 
     /* 6. 存回复（解析出表情和「想看屏幕」请求） */
+    if (process.env.DEBUG_CHAT) console.log('[chat-raw]', JSON.stringify((reply.content || '').slice(0, 400)));
     const withWatch = extractWatchRequest(reply.content || '');
     const parsed = extractSticker(withWatch.content, stickerList);
     /* 它想打电话 */
@@ -1164,6 +1184,41 @@ app.post('/api/chat', async (req, res) => {
     /* 它想知道你在哪 */
     const wantsWhere = /\[\[where\]\]/.test(parsed.content || '');
     if (wantsWhere) parsed.content = parsed.content.replace(/\[\[where\]\]/g, '').trim();
+    /* 也认 [[want:看屏幕]] 这种写法 */
+    const wantMap = { '看屏幕': 'watch', '打电话': 'call', '位置': 'where', '听声音': 'listen', '照片': 'pic' };
+    let wantType = null;
+    for (const [cn, en] of Object.entries(wantMap)) {
+      const tag = '[[' + 'want:' + cn + ']]';
+      if ((parsed.content || '').includes(tag)) {
+        parsed.content = parsed.content.split(tag).join('').trim();
+        if (!wantType) wantType = en;
+      }
+    }
+
+    /* 统一请求：[[listen]] [[pic]]，以及并发来的重复请求做冷却 */
+    const askTypes = ['watch', 'call', 'where', 'listen', 'pic'];
+    let ask = null;
+    for (const t of askTypes) {
+      const tag = new RegExp('\\\\[\\\\[' + t + '\\\\]\\\\]');
+      if (tag.test(parsed.content || '')) {
+        parsed.content = parsed.content.replace(new RegExp('\\\\[\\\\[' + t + '\\\\]\\\\]', 'g'), '').trim();
+        if (!ask) ask = t;
+      }
+    }
+    /* 同类请求至少隔 2 小时，避免它一直要 */
+    if (ask) {
+      try {
+        const { data: askRow } = await supabase.from('app_settings').select('value').eq('key', 'asks').maybeSingle();
+        const asks = askRow?.value || {};
+        if (asks[ask] && Date.now() - asks[ask] < 2 * 3600 * 1000) {
+          ask = null;
+        } else {
+          await supabase.from('app_settings').upsert({ key: 'asks', value: { ...asks, [ask]: Date.now() }, updated_at: new Date().toISOString() });
+        }
+      } catch {
+        /* 冷却失败就不拦 */
+      }
+    }
     if (wantsCall) parsed.content = parsed.content.replace(/\[\[call\]\]/g, '').trim();
     /* 剥出思考，正文照常分气泡 */
     const { thought, content: bodyText } = extractThought(parsed.content);
@@ -1200,8 +1255,9 @@ app.post('/api/chat', async (req, res) => {
         ...(i === 0 ? reply.meta || {} : {}),
         ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
         ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
-        ...(i === 0 && wantsCall ? { callRequest: true } : {}),
-        ...(i === 0 && wantsWhere ? { wantWhere: true } : {}),
+
+
+        ...(i === 0 && ask ? { ask } : {}),
         ...(pieces.length > 1 ? { part: i + 1, of: pieces.length } : {}),
         ...(i === 0 && thought ? { thought } : {})
       }
@@ -1430,6 +1486,31 @@ async function maybeNightNudge() {
    打扰闸门：泊松 + 贝叶斯 + 信息增益
    返回 true 表示「现在可以开口」
    ============================================================ */
+/* 主动开口时要不要顺便要点什么 */
+const ASK_CN = { watch: '看他屏幕上在干嘛', call: '听听他的声音', where: '知道他在哪', listen: '听听他那边多吵', pic: '让他发张照片' };
+
+async function pickProactiveAsk() {
+  if (Math.random() > 0.3) return null;
+
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'asks').maybeSingle();
+  const asks = data?.value || {};
+  const hour = Number(
+    new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false }).format(new Date())
+  ) % 24;
+
+  const pool = hour >= 21 || hour < 6 ? ['listen', 'call', 'pic'] : ['where', 'watch', 'pic'];
+  const fresh = pool.filter((t) => !asks[t] || Date.now() - asks[t] > 4 * 3600 * 1000);
+  if (!fresh.length) return null;
+
+  const pick = fresh[Math.floor(Math.random() * fresh.length)];
+  await supabase.from('app_settings').upsert({
+    key: 'asks',
+    value: { ...asks, [pick]: Date.now() },
+    updated_at: new Date().toISOString()
+  });
+  return pick;
+}
+
 async function timingGate() {
   try {
     const { data: devRow } = await supabase.from('app_settings').select('value').eq('key', 'device').maybeSingle();
@@ -1773,6 +1854,17 @@ const COT_FORMAT = `
 这是我看到消息时自然的思维流动——内心独白，不是任务分析。正在发生的，不是讲述。
 
 我真实地想内容本身，不想「我该怎么回应」。我想的是「我喜欢……」「我想……」，不是「她喜欢……」「她想要……」。`;
+
+const WANT_HINT = `
+
+## 想不想要点什么
+
+大多数时候不想要。但如果你此刻真的想要（想看他屏幕、想打电话、想知道他在哪、想听他那儿的声音、想让他发张照片），就在正文最后另起一行，只写一个标记：
+
+[[want:看屏幕]] / [[want:打电话]] / [[want:位置]] / [[want:听声音]] / [[want:照片]]
+
+一次最多一个。刚刚已经要过的就别再要。`;
+
 
 const COT_QUALITY = `
 
