@@ -16,7 +16,7 @@ import { decide as timingDecide } from './timing.js';
 import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { startCall, currentCall, callTurn, endCall } from './call.js';
-import { timePromptBlock, weatherPromptBlock, getLocation, setLocation, getWeather } from './context.js';
+import { timePromptBlock, weatherPromptBlock, placePromptBlock, getLocation, setLocation, getWeather } from './context.js';
 import { getKeys, addSubscription, removeSubscription, notifyAll } from './push.js';
 
 const app = express();
@@ -1090,6 +1090,7 @@ app.post('/api/chat', async (req, res) => {
       musicPromptBlock(music) +
       (await timePromptBlock()) +
       (await weatherPromptBlock()) +
+      (await placePromptBlock()) +
       COT_FORMAT +
       (await drivesPromptBlock());
 
@@ -1165,6 +1166,7 @@ app.post('/api/chat', async (req, res) => {
     /* 整条回复只有标记时，补一句话，别让气泡是空的 */
     if (!pieces.length && wantsCall) pieces.push('想听听你的声音。');
     if (!pieces.length && withWatch.requested) pieces.push('想看看你在做什么。');
+    if (!pieces.length) pieces.push('嗯。');
     const rows = pieces.map((t, i) => ({
       conversation_id: convId,
       role: 'assistant',

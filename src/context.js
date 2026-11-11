@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 它知道你在哪、几点、外面什么天
  * ------------------------------------------------------------
  * 时间：自己算，不花钱
@@ -23,6 +23,7 @@ export function timeParts() {
     minute: 'numeric',
     hour12: false,
     weekday: 'short',
+    year: 'numeric',
     month: 'numeric',
     day: 'numeric'
   });
@@ -51,7 +52,7 @@ export function timeParts() {
     minute,
     phase,
     weekday: WEEKDAYS[dayIdx] || '',
-    date: `${get('month')} 月 ${get('day')} 日`,
+    date: `${get('year')} 年 ${get('month')} 月 ${get('day')} 日`,
     clock: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
   };
 }
@@ -72,14 +73,45 @@ async function saveLocation(loc) {
   await supabase.from('app_settings').upsert({ key: LOC_KEY, value: loc, updated_at: new Date().toISOString() });
 }
 
+/**
+ * 反查位置：优先 Photon（能到具体店/学校），失败退回 BigDataCloud（只有城市区）
+ */
 async function reverseGeocode(lat, lon) {
-  const r = await fetch(
-    `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=zh`,
-    { signal: AbortSignal.timeout(12000) }
-  );
-  if (!r.ok) throw new Error('反查失败');
-  const j = await r.json();
-  return j.city || j.locality || j.principalSubdivision || '';
+  try {
+    const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}&limit=1`, {
+      headers: { 'User-Agent': 'BunnyHome/1.0' },
+      signal: AbortSignal.timeout(12000)
+    });
+    if (r.ok) {
+      const j = await r.json();
+      const p = j.features?.[0]?.properties;
+      if (p) {
+        return {
+          poi: p.name || '',
+          street: p.street || '',
+          district: p.district || p.locality || '',
+          city: p.city || p.county || '',
+          region: p.state || ''
+        };
+      }
+    }
+  } catch {
+    /* 换下一个 */
+  }
+
+  try {
+    const r = await fetch(
+      `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=zh`,
+      { signal: AbortSignal.timeout(12000) }
+    );
+    if (r.ok) {
+      const j = await r.json();
+      return { city: j.city || '', district: j.locality || '', region: j.principalSubdivision || '' };
+    }
+  } catch {
+    /* 全挂了就只留坐标 */
+  }
+  return {};
 }
 
 async function geocodeCity(name) {
@@ -97,8 +129,18 @@ async function geocodeCity(name) {
 export async function setLocation({ lat, lon, city }) {
   let loc;
   if (typeof lat === 'number' && typeof lon === 'number') {
-    const name = await reverseGeocode(lat, lon);
-    loc = { lat, lon, city: name || city || '', at: Date.now() };
+    const g = await reverseGeocode(lat, lon);
+    /* 只留四舍五入到 3 位（约 100 米）的坐标，够查天气，也不至于精确到门口 */
+    loc = {
+      lat: Math.round(lat * 1000) / 1000,
+      lon: Math.round(lon * 1000) / 1000,
+      city: g.city || city || '',
+      district: g.district || '',
+      street: g.street || '',
+      poi: g.poi || '',
+      region: g.region || '',
+      at: Date.now()
+    };
   } else if (city) {
     const g = await geocodeCity(city);
     loc = { ...g, at: Date.now() };
@@ -186,4 +228,19 @@ export async function weatherPromptBlock() {
   ].filter(Boolean);
 
   return `\n\n【那边的天气】${bits.join('；')}。\n只在真的相关时说（他提到出门、穿衣、天气、或者正好在下雨），别每次都念一遍。`;
+}
+
+/* 它在哪：只用来让对话有地方感，不追踪 */
+export async function placePromptBlock() {
+  const loc = await getLocation();
+  if (!loc) return '';
+
+  const parts = [];
+  if (loc.poi) parts.push(loc.poi);
+  if (loc.street && loc.street !== loc.poi) parts.push(loc.street + ' 附近');
+  if (loc.district && loc.district !== loc.street) parts.push(loc.district);
+  if (loc.city && loc.city !== loc.district) parts.push(loc.city);
+  if (!parts.length) return '';
+
+  return `\n\n【他现在在】${parts.join('，')}。\n这是最近一次定位的结果，可能已经变了。只有当他说到自己在哪、或者话题自然相关时才提，不要追问他在哪。`;
 }
