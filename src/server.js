@@ -23,7 +23,7 @@ import { cmd as burgerCmd, newGame as burgerNew, gameInfo as burgerInfo } from '
 import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
-import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
+import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment } from './diary.js';
 import { load as loadQuests, save as saveQuests, createTask, submit as submitQuest, review as reviewQuest, redeem as redeemQuest, summary as questsSummary, questsPromptBlock } from './quests.js';
 import { timePromptBlock, weatherPromptBlock, placePromptBlock, WHERE_RULE, getLocation, setLocation, getWeather } from './context.js';
@@ -735,6 +735,12 @@ app.get('/api/heartbeat', async (req, res) => {
       if (invited) console.log('[call] 主动拨号');
 
       /* 他可能自己跑去玩一会儿，回来留一句 */
+      /* 翻两页书，可能留一句批注 */
+      if (Math.random() < 0.14) {
+        const note = await autoAnnotate().catch(() => null);
+        if (note) console.log('[books] 他在书里批了一句');
+      }
+
       /* 翻翻手帐，可能回一句 */
       const commented = await maybeReadAndComment().catch(() => null);
       if (commented) console.log('[diary] 他回了一句：', commented.comment.text);
@@ -1392,6 +1398,13 @@ app.post('/api/chat', async (req, res) => {
     if (!pieces.length && wantsCall) pieces.push('想听听你的声音。');
     if (!pieces.length && withWatch.requested) pieces.push('想看看你在做什么。');
     if (!pieces.length) pieces.push('嗯。');
+    /* 缓存命中：DeepSeek 会返回 prompt_cache_hit_tokens / miss */
+    const u = reply.meta?.usage || {};
+    const hit = Number(u.prompt_cache_hit_tokens || 0);
+    const miss = Number(u.prompt_cache_miss_tokens || 0);
+    const promptTokens = Number(u.prompt_tokens || hit + miss || 0);
+    const cacheHit = promptTokens ? hit / promptTokens : null;
+
     const rows = pieces.map((t, i) => ({
       conversation_id: convId,
       role: 'assistant',
@@ -1400,6 +1413,7 @@ app.post('/api/chat', async (req, res) => {
       tokens: i === 0 ? reply.tokens : 0,
       meta: {
         ...(i === 0 ? reply.meta || {} : {}),
+        ...(i === 0 ? { usage: u, cacheHit, promptTokens } : {}),
         ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
         ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
 

@@ -11,9 +11,10 @@
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { supabase, dbReady } from './db.js';
+import { callModel } from './llm.js';
 
 const META_KEY = 'books';
-const BUCKET = 'stickers';
+const BUCKET = 'bh-books'; /* 私有桶：书不能公开可读 */
 const DIR = 'books';
 
 /* ============================================================
@@ -216,7 +217,7 @@ async function writeMeta(list) {
 
 async function ensureBucket() {
   try {
-    await supabase.storage.createBucket(BUCKET, { public: true });
+    await supabase.storage.createBucket(BUCKET, { public: false });
   } catch {
     /* 已存在 */
   }
@@ -319,11 +320,12 @@ export async function getMarks(id) {
   return readMarks(id);
 }
 
-export async function addAnnotation(id, { chapter = 0, quote = '', note = '' }) {
+export async function addAnnotation(id, { chapter = 0, quote = '', note = '', who = 'me' }) {
   const marks = await readMarks(id);
   const a = {
     id: crypto.randomUUID().slice(0, 8),
     chapter: Number(chapter) || 0,
+    who,
     quote: String(quote || '').slice(0, 400),
     note: String(note || '').slice(0, 400),
     at: Date.now()
@@ -360,6 +362,65 @@ export async function removeBookmark(id, bid) {
   marks.bookmarks = marks.bookmarks.filter((x) => x.id !== bid);
   await writeMarks(id, marks);
   return { ok: true };
+}
+
+/* 他自己在书上留一句（心跳里偶发，同一章只留一次） */
+export async function autoAnnotate() {
+  const list = await readMeta();
+  if (!list.length) return null;
+
+  const book = list[0];
+  const chapterIdx = book.progress?.chapter || 0;
+  const marks = await readMarks(book.id);
+
+  /* 这一章他留过了就不再留 */
+  if (marks.annotations.some((a) => a.who === 'ta' && a.chapter === chapterIdx)) return null;
+
+  let chapter;
+  try {
+    chapter = await getChapter(book.id, chapterIdx);
+  } catch {
+    return null;
+  }
+
+  const excerpt = String(chapter.text || '').slice(0, 1400);
+  if (excerpt.length < 30) return null;
+
+  try {
+    const r = await callModel({
+      target: 'memory',
+      system:
+        '你在读一本书，读到某一章，在页边留一句铅笔批注。' +
+        '要求：一到两句，二十到四十字；说具体的（某个动作、某句话、某个细节），不要总结整章；' +
+        '不要评价作者，不要用"作者想表达"这种话；像自言自语。只输出这句话。',
+      messages: [{ role: 'user', content: `《${book.title}》第 ${chapterIdx + 1} 章：
+${excerpt}` }],
+      temperature: 0.9,
+      maxTokens: 500
+    });
+    let note = String(r.content || '').trim().slice(0, 80);
+    if (!note) {
+      const r2 = await callModel({
+        target: 'memory',
+        system: '就这本书这一章写一句页边批注，二十到四十字，具体，口语。只输出这一句。',
+        messages: [{ role: 'user', content: excerpt.slice(0, 800) }],
+        temperature: 0.9,
+        maxTokens: 400
+      });
+      note = String(r2.content || '').trim().slice(0, 80);
+    }
+    if (!note) return null;
+
+    return await addAnnotation(book.id, {
+      chapter: chapterIdx,
+      quote: '',
+      note,
+      who: 'ta'
+    });
+  } catch (err) {
+    console.error('[books] 批注失败：', err.message.slice(0, 120));
+    return null;
+  }
 }
 
 /* ---------- 进度：章 + 页 ---------- */

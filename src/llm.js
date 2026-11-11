@@ -123,7 +123,7 @@ export async function callModel({
             content: c2.message.content,
             model: j2.model || model,
             tokens: j2.usage?.total_tokens ?? 0,
-            meta: { finish: c2.finish_reason || null, reasoning: c2.message?.reasoning_content || null, retried: true }
+            meta: { finish: c2.finish_reason || null, reasoning: c2.message?.reasoning_content || null, retried: true, usage: j2.usage || null }
           };
         }
       }
@@ -138,7 +138,8 @@ export async function callModel({
     tokens: json.usage?.total_tokens ?? 0,
     meta: {
       finish: choice?.finish_reason || null,
-      reasoning: choice?.message?.reasoning_content || null
+      reasoning: choice?.message?.reasoning_content || null,
+      usage: json.usage || null
     }
   };
 }
