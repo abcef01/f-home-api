@@ -1313,7 +1313,8 @@ app.post('/api/chat', async (req, res) => {
     }
     if (wantsCall) parsed.content = parsed.content.replace(/\[\[call\]\]/g, '').trim();
     /* 剥出思考，正文照常分气泡 */
-    const { thought, content: bodyText } = extractThought(parsed.content);
+    const { thought, content: bodyText0 } = extractThought(parsed.content);
+  const bodyText = stripMarkers(bodyText0);
 
     /* 只剩思考没有正文：先强硬重试一次，再退回压缩独白 */
     let spoken = bodyText;
@@ -1325,9 +1326,9 @@ app.post('/api/chat', async (req, res) => {
           system: system + '\n\n现在直接说你要说的话。不要写 [[思考]]，不要写任何标记，第一句就是你对他说的话。',
           messages: msgs,
           temperature: params.temperature,
-          maxTokens: 800
+          maxTokens: 2000
         });
-        spoken = (retry.content || '').replace(/\[\[思考：[\s\S]*?\]\]/g, '').trim();
+        spoken = stripMarkers(retry.content || '');
       } catch {
         spoken = '';
       }
@@ -1344,6 +1345,45 @@ app.post('/api/chat', async (req, res) => {
         spoken = (short.content || '').trim().replace(/^['「『]|['」』]$/g, '');
       } catch {
         spoken = '';
+      }
+    }
+
+    /* 他要是只回了"嗯。"这种两个字，而你说了一大段，再要一次 */
+    const userLen = String(req.body?.message || '').length;
+    if (spoken && spoken.trim().length <= 4 && userLen >= 10) {
+      try {
+        const again = await callModel({
+          target: 'memory',
+          system: '你刚才只回了很短的一句。现在把想说的话说完整：一到两句，十五字以上，口语，直接对他说。只输出这句话。',
+          messages: [...msgs, { role: 'user', content: '（你刚才几乎没说话）' }],
+          temperature: params.temperature,
+          maxTokens: 400
+        });
+        const t2 = (again.content || '').trim().replace(/^['「『]|['」』]$/g, '');
+        if (t2 && t2.length > spoken.trim().length) spoken = t2;
+      } catch {
+        /* 要不到就算了 */
+      }
+    }
+
+    const lastUserText = String(req.body?.message || '').trim() || history.filter((m) => m.role === 'user').slice(-1)[0]?.content || '';
+
+    /* 兜底：拿便宜模型直接说一句 */
+    if (!spoken || !spoken.trim()) {
+      try {
+        const simple = await callModel({
+          target: 'memory',
+          system: '你在跟对方聊天。用一句口语回应他刚才说的话，别敷衍，别说"嗯"，二十字左右。只输出这句话。',
+          messages: [
+            ...history.slice(-4).map((m) => ({ role: m.role, content: m.content })),
+            { role: 'user', content: lastUserText }
+          ],
+          temperature: 0.9,
+          maxTokens: 300
+        });
+        spoken = stripMarkers(simple.content || '');
+      } catch {
+        /* 还是不行就算了 */
       }
     }
 
@@ -1799,14 +1839,24 @@ app.delete('/api/facts/:id', async (req, res) => {
   res.json({ facts: next });
 });
 
-/* ============================================================
-   把一段话切成几个气泡（最多 3 个）
-   像人一样：想到哪说到哪，而不是发一大段
-   ============================================================ */
-function splitBubbles(text, max = 3) {
-  const clean = String(text || '').trim();
+/*
+ * 把一段话切成几个气泡
+ * ------------------------------------------------------------
+ * 不再限制数量：他想分几个就分几个，按他自己的换行和句子来。
+ * 只做一件清理——太碎的相邻短句合并，免得出现"嗯。"这种单独一泡。
+ */
+/* 清掉所有 [[xxx]] 标记，重试路径也要过这一道 */
+function stripMarkers(text) {
+  return String(text || '')
+    .replace(/\[\[思考：[\s\S]*?\]\]/g, '')
+    .replace(/\[\[[^\]]{1,20}\]\]/g, '')
+    .trim();
+}
+
+function splitBubbles(text) {
+  const clean = String(text || "").trim();
   if (!clean) return [];
-  if (clean.length <= 28) return [clean];
+  if (clean.length <= 10) return [clean];
 
   let parts = clean
     .split(/\n+/)
@@ -1821,22 +1871,18 @@ function splitBubbles(text, max = 3) {
       .filter(Boolean);
   }
 
-  /* 太碎的句子合并到上一段 */
+  /* 太碎的句子并到上一段，避免单字气泡 */
   const merged = [];
   for (const p of parts) {
-    if (merged.length && merged[merged.length - 1].length + p.length <= 30) {
-      merged[merged.length - 1] += p;
+    const prev = merged[merged.length - 1];
+    if (prev && (prev.length < 8 || p.length < 6) && prev.length + p.length <= 30) {
+      merged[merged.length - 1] = prev + p;
     } else {
       merged.push(p);
     }
   }
 
-  if (merged.length <= max) return merged;
-
-  /* 超过 max 就把后面合并进最后一段 */
-  const head = merged.slice(0, max - 1);
-  const tail = merged.slice(max - 1).join('');
-  return [...head, tail];
+  return merged;
 }
 
 /* ============================================================

@@ -100,6 +100,38 @@ export async function callModel({
 
   const json = JSON.parse(text);
   const choice = json.choices?.[0];
+
+  /* 空回复自动重试：推理模型有时把 token 全用在思考上，正文是空的。
+     这种情况把额度翻倍再要一次，别让它变成"嗯。"。 */
+  if (!String(choice?.message?.content || '').trim()) {
+    try {
+      const retryBody = {
+        ...body,
+        max_tokens: Math.min(8000, Math.max(2000, (body.max_tokens || 1200) * 3))
+      };
+      const r2 = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify(retryBody)
+      });
+      const t2 = await r2.text();
+      if (r2.ok) {
+        const j2 = JSON.parse(t2);
+        const c2 = j2.choices?.[0];
+        if (String(c2?.message?.content || '').trim()) {
+          return {
+            content: c2.message.content,
+            model: j2.model || model,
+            tokens: j2.usage?.total_tokens ?? 0,
+            meta: { finish: c2.finish_reason || null, reasoning: c2.message?.reasoning_content || null, retried: true }
+          };
+        }
+      }
+    } catch {
+      /* 重试失败就返回原来那份 */
+    }
+  }
+
   return {
     content: choice?.message?.content ?? '',
     model: json.model || model,
