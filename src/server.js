@@ -1218,7 +1218,7 @@ app.post('/api/chat', async (req, res) => {
     /* 带图就走能看图的通道（DeepSeek 会忽略图片，Claude 不会） */
     let reply = null;
     if (image) {
-      for (const ch of ['hapi', 'alt']) {
+      for (const ch of ['memory', 'alt', 'hapi']) {
         const vconf = providerConfig(ch);
         if (!vconf.base || !vconf.key) continue;
         try {
@@ -1843,7 +1843,7 @@ const HEALTH_JSON_HINT = `只输出 JSON，不要任何别的文字：
 如果看不到任何健康数据（比如是别的界面），只输出：{"none": true}`;
 
 async function readHealthFrame(image) {
-  const candidates = [process.env.WATCH_CHANNEL, 'hapi', 'alt'].filter(Boolean);
+  const candidates = ['memory', process.env.WATCH_CHANNEL, 'hapi', 'alt'].filter(Boolean);
   for (const ch of candidates) {
     const conf = providerConfig(ch);
     if (!conf.base || !conf.key) continue;

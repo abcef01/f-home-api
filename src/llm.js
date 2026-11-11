@@ -59,6 +59,11 @@ function endpoint(base) {
   return /\/v\d+$/.test(base) ? base : base + '/v1';
 }
 
+/* 有些模型不接受 temperature（比如 claude-sonnet-5），传了直接 400 */
+function acceptsTemperature(model) {
+  return !/claude|sonnet|opus|haiku/i.test(String(model || ''));
+}
+
 export async function callModel({
   messages,
   system,
@@ -76,7 +81,7 @@ export async function callModel({
 
   const body = {
     model,
-    temperature,
+    ...(acceptsTemperature(model) ? { temperature } : {}),
     max_tokens: maxTokens,
     messages: system ? [{ role: 'system', content: system }, ...messages] : messages
   };
@@ -151,7 +156,7 @@ export async function* streamChat({
     },
     body: JSON.stringify({
       model,
-      temperature,
+    ...(acceptsTemperature(model) ? { temperature } : {}),
       max_tokens: maxTokens,
       stream: true,
       stream_options: { include_usage: true },
@@ -211,12 +216,14 @@ export async function callVision({
   text = '这是对方此刻的屏幕。',
   imageDataUrl,
   channel = process.env.WATCH_CHANNEL || 'chat',
-  model = process.env.WATCH_MODEL || '',
+  model = '',
   temperature = 0.7,
   maxTokens = 120
 }) {
   const conf = providerConfig(channel);
-  const useModel = model || conf.model;
+  /* WATCH_MODEL 只对指定的看图通道生效，别把别的通道也顶成 Claude */
+  const envModel = channel === (process.env.WATCH_CHANNEL || '') ? process.env.WATCH_MODEL || '' : '';
+  const useModel = model || envModel || conf.model;
   const { base, key } = conf;
   if (!base) throw new Error('看图通道未配置');
   if (!key) throw new Error('看图通道缺少 key');
@@ -226,7 +233,7 @@ export async function callVision({
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: useModel,
-      temperature,
+      ...(acceptsTemperature(useModel) ? { temperature } : {}),
       max_tokens: maxTokens,
       messages: [
         ...(system ? [{ role: 'system', content: system }] : []),
