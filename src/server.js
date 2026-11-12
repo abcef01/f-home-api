@@ -1380,6 +1380,7 @@ app.post('/api/chat', async (req, res) => {
       '\n【收藏】\n' + favsPromptLine(await loadFavs()) +
       '\n【解读】\n' + readingsPromptLine(await loadReadings()) +
       '\n【学习】\n' + studyPromptLine(await loadStudy()) +
+      (await usagePromptBlock()) +
       (await statusPromptBlock(await drivesSummary().catch(() => ({})), )) +
       walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
@@ -3873,6 +3874,48 @@ app.get('/api/health', async (req, res) => {
   const { data } = await supabase.from('app_settings').select('value').eq('key', 'health').maybeSingle();
   res.json({ health: data?.value || null });
 });
+
+
+/* APK 上报「今天每个 App 用了多久」 */
+app.post('/api/device/usage', async (req, res) => {
+  try {
+    const apps = Array.isArray(req.body?.apps) ? req.body.apps : [];
+    const clean = apps
+      .filter((a) => a && a.label && Number(a.ms) > 0)
+      .map((a) => ({ label: String(a.label).slice(0, 20), ms: Math.round(Number(a.ms)) }))
+      .sort((a, b) => b.ms - a.ms)
+      .slice(0, 12);
+
+    const value = { date: new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }), apps: clean, at: Date.now() };
+    await supabase.from('app_settings').upsert({ key: 'usage', value, updated_at: new Date().toISOString() });
+    res.json({ ok: true, saved: clean.length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/* 他知道的：你手机用了多久 */
+async function usagePromptBlock() {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'usage').maybeSingle();
+    const u = data?.value;
+    if (!u || !u.apps?.length) return '';
+
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const stale = u.date !== today;
+    const totalMin = Math.round(u.apps.reduce((a, x) => a + x.ms, 0) / 60000);
+    const top = u.apps.slice(0, 3).map((x) => `${x.label} ${Math.round(x.ms / 60000)} 分钟`).join('、');
+
+    return (
+      '\n\n【他的手机】\n' +
+      (stale ? `（这是 ${u.date} 的数据）\n` : '') +
+      `- 今天手机一共用了约 ${totalMin} 分钟，最多的是：${top}。\n` +
+      '- 这是系统统计，你可以知道他在用手机做什么，但别像查岗一样报数；合适的时候提一句就行。'
+    );
+  } catch {
+    return '';
+  }
+}
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);

@@ -119,6 +119,7 @@ export async function knowledgeBlock() {
   const lines = [];
   lines.push(`- 头像：${avatars.me ? '他设了' : '他没设'} / ${avatars.ta ? '你设了' : '你没设'}`);
   lines.push(done.length ? `- 今天的打卡：${done.join('、')}` : '- 今天他还没打卡');
+  lines.push('- 他手机装了你的 App：你发的消息会直接弹在他的通知栏里。所以想找他，直接说，他能收到。');
 
   return `\n\n【他现在能看的】\n${lines.join('\n')}
 想细看就单独输出一行 [[查:手帐]]（或 纸条 / 打卡 / 睡眠 / 约定 / 书 / 头像 / 照片 / 界面）。
