@@ -177,8 +177,24 @@ export function summary(Q) {
 export async function questsPromptBlock() {
   const Q = await load();
   const open = Q.tasks.filter((t) => t.status === 'open' || t.status === 'submitted');
-  if (!open.length) return '';
-  return `\n\n【你们之间的约定】\n${open
-    .map((t) => `- ${t.title}（${t.points} 分）${t.status === 'submitted' ? '｜他已交了凭证，等你审' : ''}`)
-    .join('\n')}\n可以顺口问一句进展，但别每次催。`;
+  const done = Q.tasks.filter((t) => t.status === 'done').slice(-3);
+
+  const head = `\n\n【约定与积分】\n- 现在积分 ${Q.points || 0}，连击 ${Q.streak?.count || 0} 天（最长 ${Q.streak?.best || 0}）。`;
+
+  const body = open.length
+    ? '\n还没做完的：\n' +
+      open
+        .map(
+          (t) =>
+            `- ${t.title}（${t.points} 分，${t.from === 'ta' ? '你定的' : '他定的'}）` +
+            (t.status === 'submitted' ? '｜他交了凭证，等你审' : '')
+        )
+        .join('\n')
+    : '\n手上没有未完成的约定。';
+
+  const tail = done.length
+    ? '\n最近做完的：' + done.map((t) => t.title).join('、')
+    : '';
+
+  return head + body + tail + '\n可以顺口问一句进展，但别每次催。';
 }

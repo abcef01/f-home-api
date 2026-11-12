@@ -1284,7 +1284,19 @@ app.post('/api/chat', async (req, res) => {
     const base = memoryBlock
       ? `${params.systemPrompt}\n\n你们之前发生过这些事（摘要）：\n${memoryBlock}`
       : params.systemPrompt;
-    const questRule = `\n\n偶尔你会想让对方替你做到某件小事（喝水、站起来走两步、早点睡、拍一张窗外的天）。想的时候，另起一段只写 [[quest:一句话|分数]]，分数 1-10。不要天天用，也不要拿它当命令。`;
+    const TAG_MENU = `
+
+【需要时在最后单独一行输出（不需要就别写）】
+[[quest:一句话|分数]] 给他定一个小约定（1-10 分）
+[[watch]] 想看屏幕 · [[call]] 想打电话 · [[where]] 问在哪 · [[pic]] 要照片 · [[listen]] 听声音
+[[sticker:表情ID]] 贴表情
+[[想要:名字|估价|搜索词|原因|给你的]] 想给他买东西
+[[购买:depth]] 给自己买虚拟物品（depth / call / watch / memo）
+[[查:手帐]] 翻他的记录（手帐/纸条/打卡/睡眠/约定/书/头像/解读）
+[[记住:一句话]] 用"多记一件事"把它永久记住
+只在真的要做的时候写，一次最多两个。`;
+
+    const questRule = `\n\n偶尔你会想让对方替你做到某件小事（喝水、站起来走两步、早点睡、拍一张窗外的天）。\n如果你这一轮真的提出了要他做的事，就必须在最后单独一行输出 [[quest:一句话|分数]]（分数 1-10）。只在嘴上说而不写标记，他根本收不到，等于没提。\n不要天天用，也不要拿它当命令。`;
 
     const callRule = `
 偶尔你会想从对方那里要点什么。这时候另起一段，只写一个标记，系统会帮你去问：
@@ -1339,7 +1351,8 @@ app.post('/api/chat', async (req, res) => {
       (await placePromptBlock()) +
       WHERE_RULE +
       COT_FORMAT +
-      (await drivesPromptBlock());
+      (await drivesPromptBlock()) +
+      TAG_MENU;
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
@@ -2901,6 +2914,7 @@ app.post('/api/quests/create', async (req, res) => {
   try {
     const Q = await loadQuests();
     const t = createTask(Q, {
+      from: 'me',
       title: req.body?.title,
       points: Number(req.body?.points) || 5,
       daily: !!req.body?.daily,
@@ -2908,6 +2922,36 @@ app.post('/api/quests/create', async (req, res) => {
     });
     await saveQuests(Q);
     res.json({ task: t, ...questsSummary(Q) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/quests/ideate', async (req, res) => {
+  try {
+    const Q0 = await loadQuests();
+    const DIRS = ['对身体的照顾', '抬头看看外面', '跟他有关的小事', '把注意力挪开五分钟', '收尾一件事'];
+    const dir = DIRS[Math.floor(Math.random() * DIRS.length)];
+    const had = (Q0.tasks || []).slice(-6).map((t) => t.title).join('、');
+
+    const r = await callModel({
+      target: 'memory',
+      system:
+        '你给他定一个小约定：一件今天就能做到、具体、二十字以内的小事。' +
+        '往「' + dir + '」这个方向想，不要总是"喝水和走两步"这种。' +
+        '只输出 JSON：{"title":"一句话","points":数字}，分数 1-10。',
+      messages: [{ role: 'user', content: (had ? '以前定过：' + had + '，别再重复。' : '') + '定一个。' }],
+      temperature: 0.95,
+      maxTokens: 1200
+    });
+    const m = String(r.content || '').match(/\{[^{}]*\}/);
+    if (!m) return res.status(400).json({ error: '他这次没想出来，再试一次' });
+    const j = JSON.parse(m[0]);
+    if (!j.title) return res.status(400).json({ error: '没定成' });
+
+    createTask(Q0, { title: String(j.title).slice(0, 40), points: Number(j.points) || 5, from: 'ta' });
+    await saveQuests(Q0);
+    res.json(questsSummary(Q0));
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
