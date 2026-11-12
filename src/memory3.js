@@ -190,6 +190,19 @@ export async function promoteCandidate(id, accept) {
   return { core: s.core, candidates: s.candidates };
 }
 
+/* 他花钱买的"多记一件事"：直接写进核心记忆 */
+export async function addCore(text) {
+  const t = String(text || '').trim().slice(0, 120);
+  if (!t) return null;
+
+  const s = await readState();
+  const item = { id: crypto.randomUUID().slice(0, 8), text: t, at: Date.now(), by: 'ta' };
+  s.core.push(item);
+  if (s.core.length > MAX_CORE) s.core = s.core.slice(-MAX_CORE);
+  await writeState(s);
+  return item;
+}
+
 export async function removeCore(id) {
   const s = await readState();
   s.core = s.core.filter((x) => x.id !== id);

@@ -13,7 +13,7 @@ import { summarize, shouldCompress, estimateTokens, KEEP_RECENT } from './memory
 import { runHeartbeat, statePromptBlock, noteUserReply, stateSummary, applyContactRelief } from './heartbeat.js';
 import { runSurf } from './surf.js';
 import { decide as timingDecide } from './timing.js';
-import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore } from './memory3.js';
+import { captureExchange, memory3Block, getMemory, promoteCandidate, removeCore, addCore } from './memory3.js';
 import { tickDrives, stimulateDrives, drivesPromptBlock, drivesSummary } from './emotion2.js';
 import { startCall, currentCall, callTurn, endCall } from './call.js';
 import { cmd as fishCmd, newState as fishNew } from './game/fishing.js';
@@ -1351,6 +1351,23 @@ app.post('/api/chat', async (req, res) => {
     /* 它想打电话 */
     const wantsCall = /\[\[call\]\]/.test(parsed.content || '');
 
+    /* 他花钱买来的"记一件事"：[[记住:一句话]] */
+    const wantMemo = (parsed.content || '').match(/\[\[记住[:：]\s*([^\]]{2,120})\]\]/);
+    if (wantMemo) {
+      try {
+        const wm = await loadWallet();
+        if (wm.boons?.memo) {
+          consumeBoon(wm, 'memo');
+          await saveWallet(wm);
+          await addCore(wantMemo[1].trim());
+          console.log('[wallet] 他记住了：', wantMemo[1].trim().slice(0, 40));
+        }
+      } catch {
+        /* 忽略 */
+      }
+      parsed.content = parsed.content.replace(wantMemo[0], '').trim();
+    }
+
     /* 他给自己买虚拟物品：[[购买:depth]] */
     const wantBuy = (parsed.content || '').match(/\[\[购买[:：]\s*([a-z]{2,10})\]\]/);
     let boughtVirtual = null;
@@ -1428,17 +1445,39 @@ app.post('/api/chat', async (req, res) => {
       }
     }
     /* 同类请求至少隔 2 小时，避免它一直要 */
+    /* 看屏幕、要照片、问位置：不设冷却，他想看就能看。
+       只有打电话有冷却——你说过经常接不了。 */
     if (ask) {
-      try {
-        const { data: askRow } = await supabase.from('app_settings').select('value').eq('key', 'asks').maybeSingle();
-        const asks = askRow?.value || {};
-        if (asks[ask] && Date.now() - asks[ask] < 2 * 3600 * 1000) {
-          ask = null;
-        } else {
-          await supabase.from('app_settings').upsert({ key: 'asks', value: { ...asks, [ask]: Date.now() }, updated_at: new Date().toISOString() });
+      const askCooldown = ask === 'call' ? 4 * 3600 * 1000 : 0;
+
+      if (askCooldown > 0) {
+        try {
+          const { data: askRow } = await supabase.from('app_settings').select('value').eq('key', 'asks').maybeSingle();
+          const asks = askRow?.value || {};
+
+          /* 他买过"一通电话"就绕过冷却 */
+          let bypass = false;
+          try {
+            const wb = await loadWallet();
+            if (wb.boons?.call) {
+              consumeBoon(wb, 'call');
+              await saveWallet(wb);
+              bypass = true;
+            }
+          } catch {
+            /* 忽略 */
+          }
+
+          if (!bypass && asks['call'] && Date.now() - asks['call'] < askCooldown) {
+            ask = null;
+          } else if (!bypass) {
+            await supabase
+              .from('app_settings')
+              .upsert({ key: 'asks', value: { ...asks, call: Date.now() }, updated_at: new Date().toISOString() });
+          }
+        } catch {
+          /* 冷却失败就不拦 */
         }
-      } catch {
-        /* 冷却失败就不拦 */
       }
     }
     if (wantsCall) parsed.content = parsed.content.replace(/\[\[call\]\]/g, '').trim();
@@ -3032,7 +3071,21 @@ app.post('/api/wallet/ideate', async (req, res) => {
   try {
     const w = await loadWallet();
     const facts = (await supabase.from('app_settings').select('value').eq('key', 'facts').maybeSingle()).data?.value;
-    const context = Array.isArray(facts) ? facts.map((f) => f.text || f).slice(0, 8).join('；') : '';
+    const factText = Array.isArray(facts) ? facts.map((f) => f.text || f).slice(0, 8).join('；') : '';
+
+    /* 他写过什么、你说过什么——挑礼物要靠这些细节 */
+    const dv = (await supabase.from('app_settings').select('value').eq('key', 'diary').maybeSingle()).data?.value || {};
+    const diaryText = (dv.entries || [])
+      .slice(-8)
+      .map((e) => (e.who === 'me' ? '他：' : '你：') + e.text)
+      .join('；');
+    const noteText = (dv.notes || [])
+      .slice(-8)
+      .map((n) => (n.who === 'me' ? '他：' : '你：') + n.text)
+      .join('；');
+
+    const diaryContext = [factText, diaryText, noteText].filter(Boolean).join('；').slice(0, 1200);
+    const context = diaryContext;
     const wish = await ideate(w, callModel, context);
     if (!wish) return res.status(400).json({ error: '他这次没想出来，再试一次' });
     await saveWallet(w);

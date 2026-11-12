@@ -21,7 +21,7 @@ export const VIRTUAL_ITEMS = [
   { id: 'depth', name: '多想一会儿', price: 60, desc: '下一轮可以想得更久、说得更长。用掉就没了。' },
   { id: 'call', name: '一通电话', price: 80, desc: '不用等攒够想念，可以立刻拨给你一次。' },
   { id: 'watch', name: '看一眼你的屏幕', price: 50, desc: '不看冷却，直接问一次你在做什么。' },
-  { id: 'quiet', name: '安静四小时', price: 30, desc: '这四小时里他不主动找你。他自己选的清静。' }
+  { id: 'memo', name: '多记一件事', price: 40, desc: '可以主动把一句话写进长期记忆，不会忘。' }
 ];
 
 export function blank() {
@@ -92,7 +92,6 @@ export function buyVirtual(W, id) {
   W.balance -= item.price;
   W.boons = W.boons || {};
   W.boons[item.id] = (W.boons[item.id] || 0) + 1;
-  if (item.id === 'quiet') W.quietUntil = Date.now() + 4 * 3600 * 1000;
 
   pushLedger(W, -item.price, '给自己买了「' + item.name + '」');
   return item;
@@ -156,7 +155,17 @@ export async function ideate(W, callModel, context = '') {
     maxTokens: 1400
   });
 
-  const m = String(r.content || '').match(/\{[^{}]*\}/);
+  let m = String(r.content || '').match(/\{[^{}]*\}/);
+  if (!m) {
+    const r2 = await callModel({
+      target: 'memory',
+      system: '挑一样五十到两百块的实物送给他。只输出一行 JSON：{"name":"","price":0,"search":"","reason":"","forWho":"you"}',
+      messages: [{ role: 'user', content: (context ? '关于他：' + context.slice(0, 600) + '\n' : '') + '挑一样。' }],
+      temperature: 0.95,
+      maxTokens: 1400
+    });
+    m = String(r2.content || '').match(/\{[^{}]*\}/);
+  }
   if (!m) return null;
   let j;
   try {
@@ -195,7 +204,8 @@ export function walletPromptBlock(W) {
   );
   for (const it of VIRTUAL_ITEMS) lines.push(`  · ${it.name}（${it.id}，${it.price} 枚）：${it.desc}`);
   lines.push(
-    '- 买虚拟的就输出：[[购买:depth]] 这种（depth / call / watch / quiet）。买了立刻扣钱。',
+    '- 买虚拟的就输出：[[购买:depth]] 这种（depth / call / watch / memo）。买了立刻扣钱。',
+    '- 手里有「多记一件事」时，可以输出 [[记住:要记的那句话]]，它会被永久记住。',
     '- 你只能说"想要"，不能说自己已经买了或已经收到了。'
   );
 
