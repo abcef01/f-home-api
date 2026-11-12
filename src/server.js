@@ -24,6 +24,7 @@ import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
+import { loadWater, addWater, removeWater, waterView, waterPromptLine } from './water.js';
 import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock, ideate, buyVirtual, consumeBoon, VIRTUAL_ITEMS } from './wallet.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, maybeReplyAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
@@ -394,7 +395,13 @@ app.get('/api/settings/ui', async (req, res) => {
     .eq('key', 'ui')
     .maybeSingle();
   if (error) return res.status(500).json({ error: error.message });
-  res.json({ value: data?.value || null });
+
+  const v = { ...(data?.value || {}) };
+  /* 背景存的是路径，取的时候换成临时链接 */
+  if (v.bg_global) v.bgGlobal = (await signUrl(v.bg_global)) || '';
+  if (v.bg_chat) v.bgChat = (await signUrl(v.bg_chat)) || '';
+
+  res.json({ value: data ? v : null });
 });
 
 app.put('/api/settings/ui', async (req, res) => {
@@ -1272,6 +1279,7 @@ app.post('/api/chat', async (req, res) => {
       ambiencePromptBlock(ambience) +
       (await missedCallBlock()) +
       (await knowledgeBlock()) +
+      '\n\n【喝水】\n' + waterPromptLine(await loadWater()) +
       walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
       '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
@@ -3208,6 +3216,68 @@ app.post('/api/wallet/reject', async (req, res) => {
     rejectWish(w, req.body?.id);
     await saveWallet(w);
     res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+
+/* ============================================================
+   喝水
+   ============================================================ */
+app.get('/api/water', async (req, res) => {
+  res.json(waterView(await loadWater()));
+});
+
+app.post('/api/water', async (req, res) => {
+  try {
+    const all = await addWater(req.body?.ml, req.body?.note);
+    res.json(waterView(all));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/water/:id', async (req, res) => {
+  res.json(waterView(await removeWater(req.params.id)));
+});
+
+
+/* 自定义背景：存进私有桶，返回带签名的地址 */
+app.post('/api/settings/bg', async (req, res) => {
+  try {
+    const scope = req.body?.scope === 'chat' ? 'chat' : 'global';
+    const dataUrl = String(req.body?.dataUrl || '');
+
+    if (!dataUrl) {
+      /* 清空 */
+      const { data } = await supabase.from('app_settings').select('value').eq('key', 'ui').maybeSingle();
+      const ui = data?.value || {};
+      if (ui['bg_' + scope]) delete ui['bg_' + scope];
+      await supabase.from('app_settings').upsert({ key: 'ui', value: ui, updated_at: new Date().toISOString() });
+      return res.json({ ok: true, cleared: true });
+    }
+
+    const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!m) return res.status(400).json({ error: '图片格式不对' });
+
+    await ensureBucket();
+    const buf = Buffer.from(m[2], 'base64');
+    if (buf.length > 8 * 1024 * 1024) return res.status(400).json({ error: '图片太大了，8MB 以内' });
+
+    const ext = m[1].includes('png') ? 'png' : m[1].includes('webp') ? 'webp' : 'jpg';
+    const path = `bg/${scope}-${Date.now()}.${ext}`;
+
+    const { error } = await supabase.storage.from(STICKER_BUCKET).upload(path, buf, { contentType: m[1], upsert: true });
+    if (error) throw new Error(error.message);
+
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'ui').maybeSingle();
+    const ui = data?.value || {};
+    ui['bg_' + scope] = path;
+    await supabase.from('app_settings').upsert({ key: 'ui', value: ui, updated_at: new Date().toISOString() });
+
+    const url = await signPath(path);
+    res.json({ ok: true, scope, url });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
