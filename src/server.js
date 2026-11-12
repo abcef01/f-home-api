@@ -24,6 +24,7 @@ import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
+import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock } from './wallet.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, maybeReplyAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment, maybeReplyNotes } from './diary.js';
@@ -1256,6 +1257,7 @@ app.post('/api/chat', async (req, res) => {
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
       (await knowledgeBlock()) +
+      walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
       '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
       (await questsPromptBlock()) +
@@ -1334,6 +1336,26 @@ app.post('/api/chat', async (req, res) => {
     const parsed = extractSticker(withWatch.content, stickerList);
     /* 它想打电话 */
     const wantsCall = /\[\[call\]\]/.test(parsed.content || '');
+
+    /* 他想要东西：[[想要:名字|价格|搜索词|理由]] */
+    const wantWish = (parsed.content || '').match(/\[\[想要[:：]([^\]]{1,200})\]\]/);
+    let wishMade = null;
+    if (wantWish) {
+      const parts = wantWish[1].split('|').map((x) => x.trim());
+      try {
+        const w = await loadWallet();
+        wishMade = addWish(w, {
+          name: parts[0],
+          price: parts[1],
+          url: 'https://s.taobao.com/search?q=' + encodeURIComponent(parts[2] || parts[0]),
+          reason: parts[3] || ''
+        });
+        await saveWallet(w);
+      } catch {
+        /* 忽略 */
+      }
+      parsed.content = parsed.content.replace(wantWish[0], '').trim();
+    }
 
     /* 他下的约定 */
     const questMatch = (parsed.content || '').match(/\[\[quest:([^|\]]+)\|?(\d+)?\]\]/);
@@ -2931,6 +2953,59 @@ app.post('/api/sleep', async (req, res) => {
   try {
     const list = await upsertSleep(req.body || {});
     res.json({ sleep: list });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+
+/* ============================================================
+   钱包
+   ============================================================ */
+app.get('/api/wallet', async (req, res) => {
+  const w = await loadWallet();
+  res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
+});
+
+app.post('/api/wallet/transfer', async (req, res) => {
+  try {
+    const w = await loadWallet();
+    transfer(w, req.body?.amount, req.body?.note);
+    await saveWallet(w);
+    res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/wallet/wish', async (req, res) => {
+  try {
+    const w = await loadWallet();
+    addWish(w, req.body || {});
+    await saveWallet(w);
+    res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/wallet/pay', async (req, res) => {
+  try {
+    const w = await loadWallet();
+    payWish(w, req.body?.id);
+    await saveWallet(w);
+    res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/wallet/reject', async (req, res) => {
+  try {
+    const w = await loadWallet();
+    rejectWish(w, req.body?.id);
+    await saveWallet(w);
+    res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
