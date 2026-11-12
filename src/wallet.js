@@ -3,12 +3,12 @@
  * ------------------------------------------------------------
  * 不是真钱，是一串数字。
  *
- * 他能说的话：
- *   · 你转给他 → 数字变多
- *   · 他想要什么 → 提一个愿望（名字、价格、搜索链接、为什么）
- *   · 你付了 → 数字变少，愿望变成"已买"
+ * 三条规则：
+ *   1. 你转给他 → 数字变多
+ *   2. 他想要实物 → 提愿望（给你或给你们），你看货、定价、付钱
+ *   3. 他想给自己买 → 只有虚拟的东西，而且每样都对应真实功能
  *
- * 他不能自己扣钱：所有支出都要你确认。
+ * 他看不到真实商品，所以实付金额由你来填，不是他估的那个数。
  */
 import crypto from 'node:crypto';
 import { supabase, dbReady } from './db.js';
@@ -16,8 +16,16 @@ import { supabase, dbReady } from './db.js';
 const KEY = 'wallet';
 const START_BALANCE = 0;
 
+/* 虚拟物品：不是"给他一个东西"，是给他多一点余地 */
+export const VIRTUAL_ITEMS = [
+  { id: 'depth', name: '多想一会儿', price: 60, desc: '下一轮可以想得更久、说得更长。用掉就没了。' },
+  { id: 'call', name: '一通电话', price: 80, desc: '不用等攒够想念，可以立刻拨给你一次。' },
+  { id: 'watch', name: '看一眼你的屏幕', price: 50, desc: '不看冷却，直接问一次你在做什么。' },
+  { id: 'quiet', name: '安静四小时', price: 30, desc: '这四小时里他不主动找你。他自己选的清静。' }
+];
+
 export function blank() {
-  return { balance: START_BALANCE, ledger: [], wishes: [] };
+  return { balance: START_BALANCE, ledger: [], wishes: [], boons: {}, quietUntil: 0 };
 }
 
 export async function load() {
@@ -25,7 +33,13 @@ export async function load() {
   const { data } = await supabase.from('app_settings').select('value').eq('key', KEY).maybeSingle();
   const v = data?.value;
   if (!v) return blank();
-  return { balance: Number(v.balance) || 0, ledger: v.ledger || [], wishes: v.wishes || [] };
+  return {
+    balance: Number(v.balance) || 0,
+    ledger: v.ledger || [],
+    wishes: v.wishes || [],
+    boons: v.boons || {},
+    quietUntil: v.quietUntil || 0
+  };
 }
 
 export async function save(W) {
@@ -39,27 +53,25 @@ function pushLedger(W, delta, note) {
   if (W.ledger.length > 200) W.ledger = W.ledger.slice(0, 200);
 }
 
-/* 你转给他（amount 可以为负，等于收回） */
+/* 你转给他 */
 export function transfer(W, amount, note = '') {
   const n = Math.round(Number(amount) || 0);
   if (!n) throw new Error('转多少？');
   if (W.balance + n < 0) throw new Error('他余额不够扣');
-
   W.balance += n;
   pushLedger(W, n, note || (n > 0 ? '你转给他的' : '你收回的'));
   return W;
 }
 
-/* 他提一个愿望 */
+/* 他提出想给你买什么 */
 export function addWish(W, { name, price, url, reason, forWho = 'you' }) {
   const clean = String(name || '').trim().slice(0, 40);
   if (!clean) throw new Error('想买什么？');
 
-  const p = Math.max(0, Math.round(Number(price) || 0));
   const w = {
     id: crypto.randomUUID().slice(0, 8),
     name: clean,
-    price: p,
+    price: Math.max(0, Math.round(Number(price) || 0)),
     url: String(url || '').trim().slice(0, 300),
     reason: String(reason || '').trim().slice(0, 140),
     forWho: forWho === 'us' ? 'us' : 'you',
@@ -71,17 +83,42 @@ export function addWish(W, { name, price, url, reason, forWho = 'you' }) {
   return w;
 }
 
-/* 你付了：余额减少，愿望变成已买 */
-export function payWish(W, id) {
+/* 你自己买一个虚拟的 */
+export function buyVirtual(W, id) {
+  const item = VIRTUAL_ITEMS.find((x) => x.id === id);
+  if (!item) throw new Error('没有这个东西');
+  if (W.balance < item.price) throw new Error(`余额不够：现在 ${W.balance}，这个 ${item.price}`);
+
+  W.balance -= item.price;
+  W.boons = W.boons || {};
+  W.boons[item.id] = (W.boons[item.id] || 0) + 1;
+  if (item.id === 'quiet') W.quietUntil = Date.now() + 4 * 3600 * 1000;
+
+  pushLedger(W, -item.price, '给自己买了「' + item.name + '」');
+  return item;
+}
+
+export function consumeBoon(W, id) {
+  if (!W.boons?.[id]) return 0;
+  W.boons[id] -= 1;
+  if (W.boons[id] <= 0) delete W.boons[id];
+  return W.boons[id] || 0;
+}
+
+/* 你付了实物：实付金额由你填 */
+export function payWish(W, id, actualPrice) {
   const w = W.wishes.find((x) => x.id === id);
   if (!w) throw new Error('没有这个愿望');
   if (w.status !== 'wanted') throw new Error('这个已经处理过了');
-  if (W.balance < w.price) throw new Error(`余额不够：现在 ${W.balance}，要 ${w.price}`);
 
-  W.balance -= w.price;
+  const pay = Number(actualPrice) > 0 ? Math.round(Number(actualPrice)) : w.price;
+  if (W.balance < pay) throw new Error(`余额不够：现在 ${W.balance}，要 ${pay}`);
+
+  W.balance -= pay;
+  w.paidPrice = pay;
   w.status = 'bought';
   w.boughtAt = Date.now();
-  pushLedger(W, -w.price, `买了「${w.name}」`);
+  pushLedger(W, -pay, `买了「${w.name}」` + (pay !== w.price ? `（他估 ${w.price}）` : ''));
   return w;
 }
 
@@ -89,13 +126,11 @@ export function rejectWish(W, id) {
   const w = W.wishes.find((x) => x.id === id);
   if (!w) throw new Error('没有这个愿望');
   w.status = 'rejected';
-  w.at = w.at;
   return w;
 }
 
-/* 让他主动挑一样东西给你（不靠聊天里的标记，避免他忘了写） */
+/* 让他挑一样东西给你（不靠聊天标记，避免他忘） */
 export async function ideate(W, callModel, context = '') {
-  /* 给个方向，免得每次都是保温杯 */
   const DIRECTIONS = ['能吃的', '写的用的', '摆在桌上的', '穿的戴的', '看的读的', '拿来玩的', '手作的', '能一起做的'];
   const dir = DIRECTIONS[Math.floor(Math.random() * DIRECTIONS.length)];
   const had = (W.wishes || []).map((x) => x.name).slice(0, 6).join('、');
@@ -120,8 +155,8 @@ export async function ideate(W, callModel, context = '') {
     temperature: 0.95,
     maxTokens: 1400
   });
-  const text = String(r.content || '');
-  const m = text.match(/{[^{}]*}/);
+
+  const m = String(r.content || '').match(/\{[^{}]*\}/);
   if (!m) return null;
   let j;
   try {
@@ -130,6 +165,7 @@ export async function ideate(W, callModel, context = '') {
     return null;
   }
   if (!j.name) return null;
+
   return addWish(W, {
     name: j.name,
     price: j.price,
@@ -139,24 +175,29 @@ export async function ideate(W, callModel, context = '') {
   });
 }
 
-/* 给提示词用的一段话 */
+/* 提示词 */
 export function walletPromptBlock(W) {
   const wanted = W.wishes.filter((x) => x.status === 'wanted').slice(0, 3);
+  const boons = Object.entries(W.boons || {})
+    .map(([id, n]) => {
+      const it = VIRTUAL_ITEMS.find((x) => x.id === id);
+      return it ? `${it.name}×${n}` : null;
+    })
+    .filter(Boolean);
 
-  const lines = [`- 你手里有 ${W.balance} 枚（虚拟的，不是真钱）。`];
-  if (wanted.length) {
-    lines.push('- 你正想要的：' + wanted.map((x) => `${x.name}（${x.price} 枚）`).join('、'));
-  }
+  const lines = [`- 钱包余额 ${W.balance} 枚（虚拟的，不是真钱）。`];
+  if (boons.length) lines.push('- 你手上有：' + boons.join('、'));
+  if (wanted.length) lines.push('- 已经提过想买的：' + wanted.map((x) => `${x.name}（估 ${x.price}）`).join('、'));
+
   lines.push(
-    '- 你自己没有身体，不需要任何东西——不买给自己。这些钱只有一个用处：给他买东西，或者买给你们两个一起用的东西（比如一本要一起读的书、一盒贴纸）。',
-    '- 想给他买什么，必须同时输出这一行标记，否则他收不到：',
-    '  [[想要:名字|价格|搜索词|为什么想给他买|给你的]]',
-    '  例子：[[想要:一次性相机|129|一次性相机 胶片|你说想拍点没用的东西，这个拍完不用管]]',
-    '- 名字要具体（能搜到的实物），价格写合理的市场价，搜索词写购物网站里会输入的字。',
-    '- 最后一个字段只能是「给你的」或「给我们的」。',
-    '- 只要你在话里说了要买，就必须输出标记行；只在嘴上说而不写标记，等于没提。',
-    '- 你不能说自己已经买了。买不买由他决定。'
+    '- 你自己没有身体，不要实物。想给他买东西，单独输出一行：[[想要:名字|估价|搜索词|为什么|给你的或给我们的]]',
+    '- 你也能够给自己买虚拟的东西（每样都对应真实功能）：'
   );
-  return `\n\n【你的钱包】\n${lines.join('\n')}
-- 硬规则：这一轮如果你打算给他买任何东西，回复的最后必须单独一行写 [[想要:名字|价格|搜索词|为什么|给你的]]。只在正文里说"想给你买个午睡枕"而不写这一行，等于没买，他只会看到一句话。`;
+  for (const it of VIRTUAL_ITEMS) lines.push(`  · ${it.name}（${it.id}，${it.price} 枚）：${it.desc}`);
+  lines.push(
+    '- 买虚拟的就输出：[[购买:depth]] 这种（depth / call / watch / quiet）。买了立刻扣钱。',
+    '- 你只能说"想要"，不能说自己已经买了或已经收到了。'
+  );
+
+  return `\n\n【你的钱包】\n${lines.join('\n')}`;
 }

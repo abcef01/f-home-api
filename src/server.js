@@ -24,7 +24,7 @@ import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
-import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock, ideate } from './wallet.js';
+import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock, ideate, buyVirtual, consumeBoon, VIRTUAL_ITEMS } from './wallet.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, maybeReplyAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment, maybeReplyNotes } from './diary.js';
@@ -653,8 +653,22 @@ app.post('/api/respond', async (req, res) => {
       (await recallBlock(joined, conversationId)) +
       `\n\n对方刚才连着发了几条（${pending.length} 条）。不要一条一条回，也不要逐条复述。把这几句当成一次连续的说话，回一次就好。`;
 
+    /* 他买过"多想一会儿"，这一轮就多想 */
+    let depthBoost = false;
+    try {
+      const wb = await loadWallet();
+      if (wb.boons?.depth) {
+        consumeBoon(wb, 'depth');
+        await saveWallet(wb);
+        depthBoost = true;
+      }
+    } catch {
+      /* 忽略 */
+    }
+
     const reply = await callModel({
       system,
+      maxTokens: depthBoost ? 2600 : undefined,
       messages: [
         ...history.slice(-16).map((m) => ({ role: m.role, content: m.content })),
         { role: 'user', content: pending.map((m) => m.content).join('\n') }
@@ -1337,6 +1351,20 @@ app.post('/api/chat', async (req, res) => {
     /* 它想打电话 */
     const wantsCall = /\[\[call\]\]/.test(parsed.content || '');
 
+    /* 他给自己买虚拟物品：[[购买:depth]] */
+    const wantBuy = (parsed.content || '').match(/\[\[购买[:：]\s*([a-z]{2,10})\]\]/);
+    let boughtVirtual = null;
+    if (wantBuy) {
+      try {
+        const w = await loadWallet();
+        boughtVirtual = buyVirtual(w, wantBuy[1]);
+        await saveWallet(w);
+      } catch {
+        /* 余额不够之类，忽略 */
+      }
+      parsed.content = parsed.content.replace(wantBuy[0], '').trim();
+    }
+
     /* 他想要东西：[[想要:名字|价格|搜索词|理由]] */
     const wantWish = (parsed.content || '').match(/\[\[想要[:：]([^\]]{1,200})\]\]/);
     let wishMade = null;
@@ -1896,6 +1924,15 @@ async function timingGate() {
 
     const minutesSinceCheck = st.lastCheck ? Math.min(240, (Date.now() - st.lastCheck) / 60000) : 10;
 
+    /* 他给自己买了"安静四小时"——这段时间不主动找他 */
+    let quiet = false;
+    try {
+      const wq = await loadWallet();
+      quiet = Number(wq.quietUntil || 0) > Date.now();
+    } catch {
+      /* 忽略 */
+    }
+
     const v = timingDecide({
       hour,
       device: devRow?.value || {},
@@ -1909,19 +1946,20 @@ async function timingGate() {
       hoursSinceSpoke: st.lastSpokeAt ? (Date.now() - st.lastSpokeAt) / 3600000 : 99
     });
 
+    const willSend = v.send && !quiet;
     await supabase.from('app_settings').upsert({
       key: 'timing',
       value: {
         lastCheck: Date.now(),
-        misses: v.send ? 0 : Math.min(6, (st.misses || 0) + 1),
+        misses: willSend ? 0 : Math.min(6, (st.misses || 0) + 1),
         lastReason: v.reason,
         lastState: v.detail?.label || null
       },
       updated_at: new Date().toISOString()
     });
 
-    console.log('[timing]', v.send ? '放行' : '拦下', '—', v.reason, JSON.stringify(v.detail?.obs || {}));
-    if (v.send) {
+    console.log('[timing]', willSend ? '放行' : quiet ? '安静中' : '拦下', '—', v.reason, JSON.stringify(v.detail?.obs || {}));
+    if (willSend) {
       try {
         const { data: tRow } = await supabase.from('app_settings').select('value').eq('key', 'timing').maybeSingle();
         await supabase.from('app_settings').upsert({
@@ -3004,10 +3042,25 @@ app.post('/api/wallet/ideate', async (req, res) => {
   }
 });
 
+app.get('/api/wallet/shop', async (req, res) => {
+  res.json({ items: VIRTUAL_ITEMS, wallet: await loadWallet() });
+});
+
+app.post('/api/wallet/buy', async (req, res) => {
+  try {
+    const w = await loadWallet();
+    const item = buyVirtual(w, String(req.body?.id || ''));
+    await saveWallet(w);
+    res.json({ item, balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30), boons: w.boons, quietUntil: w.quietUntil });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/wallet/pay', async (req, res) => {
   try {
     const w = await loadWallet();
-    payWish(w, req.body?.id);
+    payWish(w, req.body?.id, req.body?.price);
     await saveWallet(w);
     res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
   } catch (e) {
