@@ -1380,6 +1380,7 @@ app.post('/api/chat', async (req, res) => {
       '\n【收藏】\n' + favsPromptLine(await loadFavs()) +
       '\n【解读】\n' + readingsPromptLine(await loadReadings()) +
       '\n【学习】\n' + studyPromptLine(await loadStudy()) +
+      (await nowAppPromptBlock()) +
       (await usagePromptBlock()) +
       (await statusPromptBlock(await drivesSummary().catch(() => ({})), )) +
       walletPromptBlock(await loadWallet()) +
@@ -3876,6 +3877,24 @@ app.get('/api/health', async (req, res) => {
 });
 
 
+/* APK 每分钟上报：他此刻正在用哪个 App */
+app.post('/api/device/current', async (req, res) => {
+  try {
+    const label = String(req.body?.label || '').slice(0, 20);
+    if (!label) return res.status(400).json({ error: '没有 App 名' });
+    await supabase
+      .from('app_settings')
+      .upsert({
+        key: 'nowApp',
+        value: { label, pkg: String(req.body?.pkg || '').slice(0, 80), at: Number(req.body?.at) || Date.now(), seen: Date.now() },
+        updated_at: new Date().toISOString()
+      });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 /* APK 上报「今天每个 App 用了多久」 */
 app.post('/api/device/usage', async (req, res) => {
   try {
@@ -3895,6 +3914,26 @@ app.post('/api/device/usage', async (req, res) => {
 });
 
 /* 他知道的：你手机用了多久 */
+/* 他此刻正在用的 App */
+async function nowAppPromptBlock() {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'nowApp').maybeSingle();
+    const v = data?.value;
+    if (!v || !v.label) return '';
+    const mins = Math.round((Date.now() - (v.seen || v.at || 0)) / 60000);
+    if (mins > 20) return '';
+
+    return (
+      '\n\n【他此刻】\n' +
+      `- 他现在正在用「${v.label}」` +
+      (mins < 2 ? '（刚刚切过去）' : `（${mins} 分钟前切过去的）`) +
+      '。\n- 知道就好，别每次都念出来，也别盯着不放。'
+    );
+  } catch {
+    return '';
+  }
+}
+
 async function usagePromptBlock() {
   try {
     const { data } = await supabase.from('app_settings').select('value').eq('key', 'usage').maybeSingle();
