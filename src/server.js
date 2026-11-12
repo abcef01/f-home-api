@@ -3867,6 +3867,13 @@ app.get('/api/notify/pending', async (req, res) => {
   }
 });
 
+
+/* 读上次识别到的手环数据 */
+app.get('/api/health', async (req, res) => {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'health').maybeSingle();
+  res.json({ health: data?.value || null });
+});
+
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
 });
