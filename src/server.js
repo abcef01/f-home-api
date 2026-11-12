@@ -27,6 +27,7 @@ import { NO_FABRICATION } from './truth.js';
 import { getDaily } from './daily.js';
 import { loadReadings, makeReading, removeReading, readingsPromptLine } from './readings.js';
 import { unreadCounts, markRead } from './unread.js';
+import { loadStudy, startSession, endSession, stats as studyStats, studyPromptLine } from './study.js';
 import { loadFavs, saveFavs, addFav, removeFav, favsPromptLine } from './favorites.js';
 import { myStatus, setMyStatus, hisStatus, setHisDoing, statusPromptBlock } from './status.js';
 import { loadMoments, saveMoments, addPost, toggleLike as likeMoment, addComment as commentMoment, removePost, momentsPromptLine } from './moments.js';
@@ -1378,6 +1379,7 @@ app.post('/api/chat', async (req, res) => {
       '\n【朋友圈】\n' + momentsPromptLine(await loadMoments()) +
       '\n【收藏】\n' + favsPromptLine(await loadFavs()) +
       '\n【解读】\n' + readingsPromptLine(await loadReadings()) +
+      '\n【学习】\n' + studyPromptLine(await loadStudy()) +
       (await statusPromptBlock(await drivesSummary().catch(() => ({})), )) +
       walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
@@ -3769,6 +3771,60 @@ app.get('/api/unread', async (req, res) => {
 app.post('/api/reads/:section', async (req, res) => {
   try {
     res.json({ ok: true, reads: await markRead(String(req.params.section).slice(0, 12)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+
+async function saveStudyList(list) {
+  await supabase
+    .from('app_settings')
+    .upsert({ key: 'study', value: list.slice(-500), updated_at: new Date().toISOString() });
+}
+
+/* ============================================================
+   陪我学
+   ============================================================ */
+app.get('/api/study', async (req, res) => {
+  const list = await loadStudy();
+  res.json({ sessions: list.slice(-30).reverse(), stats: studyStats(list) });
+});
+
+app.post('/api/study/start', async (req, res) => {
+  const list = await loadStudy();
+  const s2 = startSession(list, req.body?.name);
+  await saveStudyList(list);
+  res.json({ session: s2 });
+});
+
+app.post('/api/study/end', async (req, res) => {
+  try {
+    const list = await loadStudy();
+    const s2 = endSession(list, req.body?.id, req.body?.seconds);
+    await saveStudyList(list);
+    res.json({ session: s2, stats: studyStats(list) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/study/encourage', async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').slice(0, 40);
+    const mins = Math.round(Number(req.body?.minutes) || 0);
+    const r = await callModel({
+      target: 'memory',
+      system:
+        '他在学习，已经学了 ' + mins + ' 分钟，学的是「' + name + '」。\n' +
+        '说一句，一到两句，十五到三十字：不要喊口号，不要"加油""你最棒"，' +
+        '像坐在旁边的人抬头看了一眼，说句具体的（比如"这页翻得挺快"）。不能有身体动作。只输出这句话。' +
+        NO_FABRICATION,
+      messages: [{ role: 'user', content: '说一句。' }],
+      temperature: 0.95,
+      maxTokens: 600
+    });
+    res.json({ line: String((r && r.content) || '').trim().slice(0, 60) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
