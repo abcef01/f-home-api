@@ -123,13 +123,13 @@ export async function removeSubscription(endpoint) {
 }
 
 /* ---------- 发送 ---------- */
-export async function notifyAll({ title = 'Elliott', body = '给你留了一句话', url = '/#chat' } = {}) {
+export async function notifyAll({ title = 'Elliott', body = '给你留了一句话', url = '/#chat', icon = '', tag = 'bunny-message' } = {}) {
   if (!dbReady) return { sent: 0 };
   const subs = await listSubscriptions();
   if (!subs.length) return { sent: 0 };
 
   const keys = await getKeys();
-  const payload = JSON.stringify({ title, body, url });
+  const payload = JSON.stringify({ title, body, url, icon, tag });
   let sent = 0;
   const dead = [];
 

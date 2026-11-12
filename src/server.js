@@ -26,6 +26,7 @@ import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
 import { getDaily } from './daily.js';
 import { loadReadings, makeReading, removeReading, readingsPromptLine } from './readings.js';
+import { unreadCounts, markRead } from './unread.js';
 import { loadFavs, saveFavs, addFav, removeFav, favsPromptLine } from './favorites.js';
 import { myStatus, setMyStatus, hisStatus, setHisDoing, statusPromptBlock } from './status.js';
 import { loadMoments, saveMoments, addPost, toggleLike as likeMoment, addComment as commentMoment, removePost, momentsPromptLine } from './moments.js';
@@ -811,11 +812,7 @@ app.get('/api/heartbeat', async (req, res) => {
             .eq('id', convId);
           spoke = saved;
           applyContactRelief().catch(() => {});
-          notifyAll({
-            title: 'Elliott',
-            body: (text || '').slice(0, 60),
-            url: '/#chat'
-          }).catch(() => {});
+          notifyFromHim((text || '').slice(0, 60), { url: '/#chat', tag: 'chat-' + (spoke?.id || Date.now()) });
         }
       }
     }
@@ -826,6 +823,37 @@ app.get('/api/heartbeat', async (req, res) => {
       if (invited) console.log('[call] 主动拨号');
 
       /* 他可能自己跑去玩一会儿，回来留一句 */
+      /* 他偶尔翻你的朋友圈，点个赞或留一句 */
+      try {
+        const mlist2 = await loadMoments();
+        const mine = mlist2.filter((p) => p.who === 'me' && Date.now() - p.at < 3 * 24 * 3600 * 1000);
+        const untouched = mine.filter((p) => !(p.likes || []).includes('ta') && !(p.comments || []).some((c) => c.who === 'ta'));
+        if (untouched.length && Math.random() < 0.25) {
+          const target = untouched[0];
+          if (Math.random() < 0.5) {
+            likeMoment(mlist2, target.id, 'ta');
+            await saveMoments(mlist2);
+            await notifyFromHim('赞了你的朋友圈', { url: '/#moments', tag: 'mlike-' + target.id });
+          } else {
+            const r = await callModel({
+              target: 'memory',
+              system: '看到对方发的朋友圈，回一句评论：一到两句，十五到三十字，口语，像朋友在下面接话。只输出这句。' + NO_FABRICATION,
+              messages: [{ role: 'user', content: target.text || '（他发了一张图）' }],
+              temperature: 0.9,
+              maxTokens: 600
+            });
+            const cm = String(r.content || '').trim().slice(0, 60);
+            if (cm) {
+              commentMoment(mlist2, target.id, { text: cm, who: 'ta' });
+              await saveMoments(mlist2);
+              await notifyFromHim('留言：' + cm, { url: '/#moments', tag: 'mcm-' + target.id });
+            }
+          }
+        }
+      } catch {
+        /* 忽略 */
+      }
+
       /* 他偶尔自己发一条朋友圈（一天最多一条） */
       try {
         const mlist = await loadMoments();
@@ -848,6 +876,7 @@ app.get('/api/heartbeat', async (req, res) => {
             addPost(mlist, { text: txt, who: 'ta' });
             await saveMoments(mlist);
             console.log('[moments] 他发了一条');
+            await notifyFromHim('发了条朋友圈：' + txt.slice(0, 40), { url: '/#moments', tag: 'moment-' + Date.now() });
           }
         }
       } catch {
@@ -864,11 +893,17 @@ app.get('/api/heartbeat', async (req, res) => {
 
       /* 纸条墙上可能接一句 */
       const noteReply = await maybeReplyNotes().catch(() => null);
-      if (noteReply) console.log('[diary] 他接了纸条一句');
+      if (noteReply) {
+        console.log('[diary] 他接了纸条一句');
+        await notifyFromHim('回了你的纸条：' + String(noteReply.comment || '').slice(0, 40), { url: '/#diary', tag: 'note-' + Date.now() });
+      }
 
       /* 你书里的批注，他可能接话 */
       const annotReply = await maybeReplyAnnotation().catch(() => null);
-      if (annotReply) console.log('[books] 他接了你的批注');
+      if (annotReply) {
+        console.log('[books] 他接了你的批注');
+        await notifyFromHim('在你的批注下接了句：' + String(annotReply.note || '').slice(0, 40), { url: '/#read', tag: 'book-' + Date.now() });
+      }
 
       /* 翻两页书，可能留一句批注 */
       if (Math.random() < 0.14) {
@@ -878,7 +913,10 @@ app.get('/api/heartbeat', async (req, res) => {
 
       /* 翻翻手帐，可能回一句 */
       const commented = await maybeReadAndComment().catch(() => null);
-      if (commented) console.log('[diary] 他回了一句：', commented.comment.text);
+      if (commented) {
+        console.log('[diary] 他回了一句：', commented.comment.text);
+        await notifyFromHim('在手帐里留了句：' + String(commented.comment.text || '').slice(0, 40), { url: '/#diary', tag: 'diary-' + Date.now() });
+      }
 
       /* 偶尔在手帐上写一页 */
       if (Math.random() < 0.18) {
@@ -887,6 +925,7 @@ app.get('/api/heartbeat', async (req, res) => {
           const D2 = await loadDiary();
           await saveDiary(D2);
           console.log('[diary] 他写了一页');
+          await notifyFromHim('写了今天的手帐', { url: '/#diary', tag: 'diary-page-' + Date.now() });
         }
       }
 
@@ -2480,6 +2519,24 @@ app.get('/api/drives', async (req, res) => {
   res.json(await drivesSummary());
 });
 
+/* 他做了一件事 → 推送（头像 + 昵称 + 内容） */
+async function notifyFromHim(body, { url = '/#chat', tag = 'bunny-message' } = {}) {
+  try {
+    const ui = (await supabase.from('app_settings').select('value').eq('key', 'ui').maybeSingle()).data?.value || {};
+    const avatars = (await supabase.from('app_settings').select('value').eq('key', 'avatars').maybeSingle()).data?.value || {};
+    const name = (ui.taName || 'Elliott').slice(0, 20);
+    let icon = '/icons/icon-192.png';
+    if (avatars.ta) {
+      const path = pathFromUrl(avatars.ta);
+      const signed = path ? await signPath(path) : null;
+      if (signed) icon = signed;
+    }
+    await notifyAll({ title: name, body: String(body || '').slice(0, 80), url, icon, tag });
+  } catch {
+    /* 推送失败不影响别的 */
+  }
+}
+
 /* 上次没接的电话：让他知道，并且说一句（说一次就清掉） */
 async function missedCallBlock() {
   try {
@@ -3695,6 +3752,26 @@ app.delete('/api/readings/:id', async (req, res) => {
   const list = removeReading(await loadReadings(), req.params.id);
   await supabase.from('app_settings').upsert({ key: 'readings', value: list, updated_at: new Date().toISOString() });
   res.json({ ok: true });
+});
+
+
+/* ============================================================
+   未读
+   ============================================================ */
+app.get('/api/unread', async (req, res) => {
+  try {
+    res.json(await unreadCounts());
+  } catch {
+    res.json({ diary: 0, notes: 0, moments: 0 });
+  }
+});
+
+app.post('/api/reads/:section', async (req, res) => {
+  try {
+    res.json({ ok: true, reads: await markRead(String(req.params.section).slice(0, 12)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => {
