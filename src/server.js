@@ -25,6 +25,8 @@ import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
 import { getDaily } from './daily.js';
+import { loadMoments, saveMoments, addPost, toggleLike as likeMoment, addComment as commentMoment, removePost, momentsPromptLine } from './moments.js';
+import { loadMeals, markMeal, view as mealsView, mealsPromptLine } from './meals.js';
 import { loadWater, addWater, removeWater, waterView, waterPromptLine } from './water.js';
 import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock, ideate, buyVirtual, consumeBoon, VIRTUAL_ITEMS } from './wallet.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
@@ -1282,6 +1284,8 @@ app.post('/api/chat', async (req, res) => {
       (await missedCallBlock()) +
       (await knowledgeBlock()) +
       '\n\n【喝水】\n' + waterPromptLine(await loadWater()) +
+      '\n【三餐】\n' + mealsPromptLine(await loadMeals()) +
+      '\n【朋友圈】\n' + momentsPromptLine(await loadMoments()) +
       walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
       '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
@@ -3421,6 +3425,96 @@ app.post('/api/vision/guess', async (req, res) => {
     res.json({ guess });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+
+/* ============================================================
+   朋友圈
+   ============================================================ */
+app.get('/api/moments', async (req, res) => {
+  const list = await loadMoments();
+  const out = await Promise.all(
+    list.map(async (m) => ({ ...m, imageUrl: m.image ? await signPath(m.image) : '' }))
+  );
+  res.json({ moments: out });
+});
+
+app.post('/api/moments', async (req, res) => {
+  try {
+    const list = await loadMoments();
+    let imagePath = '';
+
+    const dataUrl = String(req.body?.dataUrl || '');
+    if (dataUrl) {
+      const m = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      if (!m) throw new Error('图片格式不对');
+      await ensureBucket();
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length > 8 * 1024 * 1024) throw new Error('图太大，8MB 内');
+      const ext = m[1].includes('png') ? 'png' : 'jpg';
+      imagePath = `moments/${Date.now()}.${ext}`;
+      const up = await supabase.storage.from(STICKER_BUCKET).upload(imagePath, buf, { contentType: m[1], upsert: true });
+      if (up.error) throw new Error(up.error.message);
+    }
+
+    const post = addPost(list, {
+      text: req.body?.text,
+      imagePath,
+      who: req.body?.who === 'ta' ? 'ta' : 'me'
+    });
+    await saveMoments(list);
+
+    res.json({ post: { ...post, imageUrl: imagePath ? await signPath(imagePath) : '' } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/moments/:id/like', async (req, res) => {
+  try {
+    const list = await loadMoments();
+    const m = likeMoment(list, req.params.id, req.body?.who === 'ta' ? 'ta' : 'me');
+    await saveMoments(list);
+    res.json({ post: m });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/moments/:id/comment', async (req, res) => {
+  try {
+    const list = await loadMoments();
+    const m = commentMoment(list, req.params.id, {
+      text: req.body?.text,
+      who: req.body?.who === 'ta' ? 'ta' : 'me'
+    });
+    await saveMoments(list);
+    res.json({ post: m });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/moments/:id', async (req, res) => {
+  const list = await loadMoments();
+  await saveMoments(removePost(list, req.params.id));
+  res.json({ ok: true });
+});
+
+/* ============================================================
+   三餐
+   ============================================================ */
+app.get('/api/meals', async (req, res) => {
+  res.json(mealsView(await loadMeals()));
+});
+
+app.post('/api/meals', async (req, res) => {
+  try {
+    const v = await markMeal(req.body?.slot, req.body?.text, req.body?.eaten !== false);
+    res.json(v);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
