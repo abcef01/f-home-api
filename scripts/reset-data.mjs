@@ -48,13 +48,27 @@ if (!url || !key) {
 const supabase = createClient(url, key, { auth: { persistSession: false } });
 const CONFIRM = process.argv.includes('--yes');
 
-const TABLES = ['messages', 'conversations', 'memories', 'app_settings'];
+const TABLES = ['messages', 'conversations', 'memories'];
+
+/* 这些是"设置"，不是"内容"，打包时保留：
+   人格提示词、模型选择、界面偏好、头像、推送密钥 */
+const KEEP_KEYS = ['chat_params', 'chat_model', 'ui', 'avatars', 'avatarDesc', 'push_keys', 'push_subs'];
 const BUCKETS = ['stickers', 'bh-books'];
 
 async function countRows(table) {
   const { count, error } = await supabase.from(table).select('*', { count: 'exact', head: true });
   if (error) return `? (${error.message})`;
   return count ?? 0;
+}
+
+async function wipeSettings() {
+  const { data } = await supabase.from('app_settings').select('key');
+  const keys = (data || []).map((r) => r.key).filter((k) => !KEEP_KEYS.includes(k));
+  if (!keys.length) return 0;
+
+  const { error } = await supabase.from('app_settings').delete().in('key', keys);
+  if (error) throw new Error('app_settings: ' + error.message);
+  return keys.length;
 }
 
 async function wipeTable(table) {
@@ -74,7 +88,11 @@ async function wipeBucket(bucket) {
   const walk = async (prefix) => {
     const { data } = await supabase.storage.from(bucket).list(prefix, { limit: 1000 });
     if (!data?.length) return;
-    const files = data.filter((x) => x.id).map((x) => (prefix ? `${prefix}/${x.name}` : x.name));
+    const files = data
+      .filter((x) => x.id)
+      .filter((x) => !(prefix === '' && x.name === 'bg'))
+      .filter((x) => !(prefix === 'bg'))
+      .map((x) => (prefix ? `${prefix}/${x.name}` : x.name));
     if (files.length) {
       const { error } = await supabase.storage.from(bucket).remove(files);
       if (!error) removed += files.length;
@@ -110,6 +128,8 @@ for (const t of TABLES) {
   await wipeTable(t);
   console.log(`  ${t} 清空 ${n} 行`);
 }
+const keptCount = await wipeSettings();
+console.log(`  app_settings 清掉 ${keptCount} 项（保留 ${KEEP_KEYS.join('、')}）`);
 for (const b of BUCKETS) {
   const n = await wipeBucket(b);
   console.log(`  ${b} 删除 ${n} 个文件`);
