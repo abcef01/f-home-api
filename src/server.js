@@ -24,6 +24,7 @@ import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
+import { getDaily } from './daily.js';
 import { loadWater, addWater, removeWater, waterView, waterPromptLine } from './water.js';
 import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock, ideate, buyVirtual, consumeBoon, VIRTUAL_ITEMS } from './wallet.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
@@ -2485,7 +2486,18 @@ app.post('/api/call/turn', async (req, res) => {
     const text = String(req.body?.text || '').trim();
     if (!text) return res.status(400).json({ error: '说了什么？' });
     const params = await getChatParams();
+    let frameBlock = '';
+    try {
+      const { data: fr } = await supabase.from('app_settings').select('value').eq('key', 'callFrame').maybeSingle();
+      if (fr?.value?.desc && Date.now() - fr.value.at < 3 * 60 * 1000) {
+        frameBlock = '\n\n【你从视频里看到的】：' + fr.value.desc + '\n可以自然地提一句，但别像在播报画面。';
+      }
+    } catch {
+      /* 忽略 */
+    }
+
     const ctx =
+      frameBlock +
       (await statePromptBlock()) +
       (await devicePromptBlock()) +
       (await drivesPromptBlock()) +
@@ -3280,6 +3292,96 @@ app.post('/api/settings/bg', async (req, res) => {
     res.json({ ok: true, scope, url });
   } catch (e) {
     res.status(400).json({ error: e.message });
+  }
+});
+
+
+/* ============================================================
+   每日一句 + 问候
+   ============================================================ */
+app.get('/api/daily', async (req, res) => {
+  try {
+    const me = String(req.query.me || '你').slice(0, 20);
+    res.json(await getDaily(me));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ============================================================
+   相册：聊天里的图片
+   ============================================================ */
+app.get('/api/album', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('id, meta, created_at, role')
+      .order('created_at', { ascending: false })
+      .limit(300);
+    if (error) throw new Error(error.message);
+
+    const rows = (data || []).filter((m) => m.meta?.image || m.meta?.sticker);
+    const photos = await Promise.all(
+      rows.map(async (m) => ({
+        id: m.id,
+        url: await signUrl(m.meta.image || m.meta.sticker),
+        at: m.created_at,
+        from: m.role === 'user' ? 'me' : 'ta',
+        isSticker: !!m.meta.sticker
+      }))
+    );
+
+    const byDay = {};
+    for (const ph of photos) {
+      if (!ph.url) continue;
+      const d = String(ph.at).slice(0, 10);
+      (byDay[d] = byDay[d] || []).push(ph);
+    }
+
+    res.json({
+      total: photos.length,
+      days: Object.entries(byDay)
+        .sort((a, b) => (a[0] < b[0] ? 1 : -1))
+        .map(([date, list]) => ({ date, photos: list }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+/* 视频通话：他看一眼画面 */
+app.post('/api/call/frame', async (req, res) => {
+  try {
+    const dataUrl = String(req.body?.image || '');
+    if (!dataUrl.startsWith('data:image/')) return res.status(400).json({ error: '没有画面' });
+
+    const r = await callVision({
+      system:
+        '这是视频通话里对方摄像头的一帧。用两句话描述你看到的：人在做什么、画面里有什么、光线怎么样。' +
+        '如果看不到人，就描述画面本身。不要评价长相，不要猜心情，只说你看到的。',
+      text: '这一帧。',
+      imageDataUrl: dataUrl,
+      maxTokens: 300
+    });
+
+    const desc = String((r && (r.content || r.text || '')) || '').trim();
+    if (desc) {
+      const call = await currentCall();
+      if (call) {
+        await supabase
+          .from('app_settings')
+          .upsert({
+            key: 'callFrame',
+            value: { desc: desc.slice(0, 300), at: Date.now() },
+            updated_at: new Date().toISOString()
+          });
+      }
+    }
+
+    res.json({ ok: !!desc, desc });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
