@@ -1152,7 +1152,7 @@ app.post('/api/chat/stream', async (req, res) => {
 app.post('/api/chat', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
 
-  const { conversationId, message, sticker, image, storeOnly, music, ambience } = req.body || {};
+  const { conversationId, message, sticker, image, storeOnly, music, ambience, sing: singMeta } = req.body || {};
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'message 必须是非空字符串' });
   }
@@ -1277,6 +1277,7 @@ app.post('/api/chat', async (req, res) => {
       pillText +
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
+      singPromptBlock(singMeta) +
       ambiencePromptBlock(ambience) +
       (await missedCallBlock()) +
       (await knowledgeBlock()) +
@@ -2623,6 +2624,20 @@ async function tonePromptBlock(tone) {
 /* ============================================================
    听歌：把分析出来的结构翻译成「你听到了什么」
    ============================================================ */
+/* 他唱的一段：只有声音特征，没有歌词 */
+function singPromptBlock(sing) {
+  if (!sing) return '';
+  const bits = [];
+  if (sing.duration) bits.push(`时长约 ${sing.duration} 秒`);
+  if (sing.noteName) bits.push(`大致在 ${sing.noteName} 附近`);
+  if (sing.range != null) bits.push(`音域跨 ${sing.range} 个半音`);
+  if (sing.jitter != null) bits.push(`音高抖动 ${sing.jitter}`);
+  if (sing.drift) bits.push(sing.drift > 0 ? '越唱越高' : '越唱越低');
+  if (sing.text) bits.push(sing.text);
+
+  return `\n\n【他刚唱了一段】\n${bits.join('；')}\n你听到的是人声的音高、音域、稳不稳、快慢——听不到歌词。别假装听清唱的是什么词。`;
+}
+
 function musicPromptBlock(music) {
   if (!music || typeof music !== 'object' || music.error) return '';
 
