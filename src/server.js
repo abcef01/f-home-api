@@ -3830,6 +3830,43 @@ app.post('/api/study/encourage', async (req, res) => {
   }
 });
 
+
+/* ============================================================
+   给 APK 里的后台服务轮询用：他有没有新消息
+   ============================================================ */
+app.get('/api/notify/pending', async (req, res) => {
+  try {
+    const since = Number(req.query.since) || 0;
+    const now = Date.now();
+    const fromIso = new Date(since || now - 60 * 1000).toISOString();
+
+    const { data } = await supabase
+      .from('messages')
+      .select('id, content, created_at, role')
+      .eq('role', 'assistant')
+      .gt('created_at', fromIso)
+      .order('created_at', { ascending: true })
+      .limit(20);
+
+    const ui = (await supabase.from('app_settings').select('value').eq('key', 'ui').maybeSingle()).data?.value || {};
+    const name = (ui.taName || 'Elliott').slice(0, 20);
+
+    const items = (data || [])
+      .filter((m) => m.content && m.content !== '[表情]')
+      .map((m) => ({
+        id: m.id,
+        title: name,
+        body: String(m.content).slice(0, 80),
+        url: '/#chat',
+        at: m.created_at
+      }));
+
+    res.json({ now, items });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
 });
