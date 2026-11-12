@@ -52,14 +52,27 @@ export async function getDaily(me = '你') {
         target: 'memory',
         system:
           '写一句给爱人的情话，用在软件首页的"每日一句"。要求：' +
-          '一句话，十五到三十字；要具体，不要空泛的"我爱你"；' +
-          '可以是喜欢他某个细节、想象中的动作、或者一句很轻的占有欲；' +
-          '不要励志、不要鸡汤、不要排比、不要用"宝贝""亲爱的"这种称呼。只输出这句话。',
+          '一句话，十五到三十字；具体，不要空泛的"我爱你"。\n' +
+          '你没有身体：不能倒水、不能伸手、不能低头、不能走过去、不能摸他。写这类动作就算错。\n' +
+          '可以写：你在他身上注意到的东西、你等他/想他的方式（等待、被想起、算时间、留着话没说）、' +
+          '一句很轻的占有欲、或者你希望他做的动作（那是他做，不是你做）。\n' +
+          '不要励志、不要鸡汤、不要排比、不要用"宝贝""亲爱的"。只输出这句话。',
         messages: [{ role: 'user', content: `今天是 ${today}。` }],
         temperature: 1.0,
-        maxTokens: 400
+        maxTokens: 1400
       });
-      const q = String(r.content || '').trim().replace(/^["'「]|["'」]$/g, '').slice(0, 60);
+      let q = String(r.content || '').trim().replace(/^["'「]|["'」]$/g, '').slice(0, 60);
+
+      if (!q) {
+        const r2 = await callModel({
+          target: 'memory',
+          system: '一句话情话，十五到三十字，具体，不能有身体动作（不能倒水、伸手、低头）。只输出这句话。',
+          messages: [{ role: 'user', content: '写一句。' }],
+          temperature: 1.0,
+          maxTokens: 1400
+        });
+        q = String(r2.content || '').trim().slice(0, 60);
+      }
       if (q) {
         out.quote = q;
         out.date = today;
@@ -80,7 +93,7 @@ export async function getDaily(me = '你') {
           '要跟时间段贴合（现在是' + slotCn(s) + '）；不要"早上好呀～"这种客服腔，不要表情符号。只输出这句话。',
         messages: [{ role: 'user', content: `现在是${slotCn(s)}，他打开软件了。` }],
         temperature: 1.0,
-        maxTokens: 400
+        maxTokens: 1200
       });
       const g = String(r.content || '').trim().slice(0, 80);
       if (g) {

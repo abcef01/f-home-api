@@ -2106,7 +2106,8 @@ app.delete('/api/facts/:id', async (req, res) => {
 function stripMarkers(text) {
   return String(text || '')
     .replace(/\[\[思考：[\s\S]*?\]\]/g, '')
-    .replace(/\[\[[^\]]{1,20}\]\]/g, '')
+    .replace(/\[\[sticker:[^\]]+\]\]/g, '')
+    .replace(/\[\[[^\]]{1,60}\]\]/g, '')
     .trim();
 }
 
