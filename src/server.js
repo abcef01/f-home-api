@@ -3385,6 +3385,29 @@ app.post('/api/call/frame', async (req, res) => {
   }
 });
 
+
+/* 你画我猜：他只看图，猜是什么 */
+app.post('/api/vision/guess', async (req, res) => {
+  try {
+    const dataUrl = String(req.body?.image || '');
+    if (!dataUrl.startsWith('data:image/')) return res.status(400).json({ error: '没有图' });
+
+    const r = await callVision({
+      system:
+        '这是对方画的一幅简笔画，在玩你画我猜。看画面，猜他画的是什么，只给一个具体的词（不超过六个字）。' +
+        '如果实在画得看不出来，就给最接近的猜测。不要解释，不要问句，只输出那个词。',
+      text: '猜猜画的是什么。',
+      imageDataUrl: dataUrl,
+      maxTokens: 120
+    });
+
+    const guess = String((r && (r.content || '')) || '').trim().slice(0, 20);
+    res.json({ guess });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
 });
