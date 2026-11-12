@@ -69,7 +69,14 @@ export function momentsPromptLine(list) {
   return (
     '- 朋友圈最近：' +
     recent
-      .map((p) => `${p.who === 'me' ? '他' : '你'}：${p.text || '（一张图）'}`)
-      .join('；')
+      .map((p) => {
+        const likes = (p.likes || []).map((w) => (w === 'me' ? '他赞了' : '你赞了')).join('、');
+        const cs = (p.comments || [])
+          .map((c) => `${c.who === 'me' ? '他' : '你'}留言：${c.text}`)
+          .join('；');
+        const extra = [likes, cs].filter(Boolean).join('；');
+        return `${p.who === 'me' ? '他' : '你'}：${p.text || '（一张图）'}` + (extra ? `（${extra}）` : '');
+      })
+      .join('\n')
   );
 }

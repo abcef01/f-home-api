@@ -234,6 +234,19 @@ export async function fetchTopic(topic) {
     return `【界面与设备】\n标题：${ui.homeTitle || '未设'}\n配色：${ui.theme || '默认'}\n设备：${dev.model || '未知'}`;
   }
 
+  if (t === '解读' || t === 'reading') {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'readings').maybeSingle();
+    const list = Array.isArray(data?.value) ? data.value : [];
+    if (!list.length) return '还没解过什么。';
+    return (
+      '【最近的解读】\n' +
+      list
+        .slice(0, 2)
+        .map((r) => `（${r.kind === 'dream' ? '梦' : '塔罗'}）${r.question || ''}\n${r.text.slice(0, 400)}`)
+        .join('\n\n')
+    );
+  }
+
   if (t === '照片' || t === 'photos') {
     return '【照片】图片在聊天记录里，但我没把画面记成文字。想让我记得，就告诉我图里是什么。';
   }

@@ -25,6 +25,7 @@ import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
 import { getDaily } from './daily.js';
+import { loadReadings, makeReading, removeReading, readingsPromptLine } from './readings.js';
 import { loadFavs, saveFavs, addFav, removeFav, favsPromptLine } from './favorites.js';
 import { myStatus, setMyStatus, hisStatus, setHisDoing, statusPromptBlock } from './status.js';
 import { loadMoments, saveMoments, addPost, toggleLike as likeMoment, addComment as commentMoment, removePost, momentsPromptLine } from './moments.js';
@@ -1325,6 +1326,7 @@ app.post('/api/chat', async (req, res) => {
       '\n【三餐】\n' + mealsPromptLine(await loadMeals()) +
       '\n【朋友圈】\n' + momentsPromptLine(await loadMoments()) +
       '\n【收藏】\n' + favsPromptLine(await loadFavs()) +
+      '\n【解读】\n' + readingsPromptLine(await loadReadings()) +
       (await statusPromptBlock(await drivesSummary().catch(() => ({})), )) +
       walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
@@ -3621,6 +3623,34 @@ app.post('/api/status', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+
+/* ============================================================
+   解读（塔罗 / 梦）
+   ============================================================ */
+app.get('/api/readings', async (req, res) => {
+  res.json({ readings: await loadReadings() });
+});
+
+app.post('/api/readings', async (req, res) => {
+  try {
+    const list = await loadReadings();
+    const item = await makeReading(list, {
+      kind: req.body?.kind,
+      input: req.body?.input,
+      question: req.body?.question
+    });
+    res.json({ reading: item, readings: await loadReadings() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/readings/:id', async (req, res) => {
+  const list = removeReading(await loadReadings(), req.params.id);
+  await supabase.from('app_settings').upsert({ key: 'readings', value: list, updated_at: new Date().toISOString() });
+  res.json({ ok: true });
 });
 
 app.listen(PORT, () => {
