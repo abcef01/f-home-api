@@ -1,104 +1,69 @@
-﻿# 打包 APK 时要做的事（清单）
+# 打包安装包（Home）
 
-> ## ⚠️ 打包前必做：清空测试数据
->
-> 现在库里全是测试内容（对话、手帐、游戏、打卡……）。
-> 交付前必须抹干净，从零开始。
->
-> ```powershell
-> cd bunny-home-api
-> node scripts/reset-data.mjs          # 先演练，看一眼要删多少
-> node scripts/reset-data.mjs --yes    # 真的删
-> ```
->
-> 会删：所有会话与消息、记忆、app_settings 全部状态、图片桶和书桶里的文件。
-> 不会删：Supabase 项目和表结构、环境变量（口令、模型 key）。
->
-> **删完重新登录一次**，口令不变，但会话没了，需要重新进。
+## 名字
 
-> ⚠️ **装好 App 之后第一件要做的事**：去 设置 → 应用 → 特殊权限 →
-> **使用情况访问** → 允许 Bunny's Home。
-> 这一个权限同时解锁三样东西：
->   1. 正在用哪个 App
->   2. **屏幕使用时长**（安卓数字健康的数据来源）
->   3. 手环健康数据（Health Connect）
+| 位置 | 值 |
+|---|---|
+| 应用名（桌面显示） | **Home** |
+| 包名 | app.home.bunny |
+| 版本 | 1.0（versionCode 1） |
 
-> 这份清单放在仓库里，任何人（包括未来的我）打开仓库都能看到。
-> 状态：⬜ 未做 / 🔄 代码已写未验证 / ✅ 已验证
+## 怎么出安装包
 
-## 0. 前置
+本地没有 Android SDK 也没关系，编译在 GitHub 云端做。
 
-- ⬜ 在 GitHub 仓库点 **Actions → build-android → Run workflow**
-- ⬜ 下载 artifact 里的 `app-debug.apk`
-- ⬜ 手机上允许「安装未知来源应用」，装好
+**1. 推前端**
 
-> 第一次云端构建很可能会失败（这台开发机没有 Android SDK，代码没编译过）。
-> 把 Actions 的报错贴出来，我照着改。
-
-## 1. 手机状态（已写代码，未验证）
-
-- 🔄 `mobile/native/BunnyStatusPlugin.java`
-  - 锁屏：`KeyguardManager`（不需要授权）
-  - 正在用的 App：`UsageStatsManager`（需要「使用情况访问」权限）
-- ⬜ 装好 App 后，去 **设置 → 应用 → 特殊权限 → 使用情况访问 → 允许 Bunny's Home**
-- ⬜ 验证：手机上打开微信，看 App 里 Elliott 是否会知道
-
-## 2. 健康数据（华为手环）
-
-### 前提确认（这一步最不确定）
-
-- ⬜ 打开华为运动健康 → 设置 → 找有没有 **「Health Connect」/「连接其他应用」**
-  - 有 → 打开同步，继续往下
-  - 没有 → 这个版本不支持，只能继续用「发截图」的方式，或者考虑导出再导入
-
-### 代码（等上面确认通过再写，约半天）
-
-- ⬜ 写 `mobile/native/HealthPlugin.kt`：读昨天步数 / 昨晚睡眠 / 静息心率
-- ⬜ `mobile/native/inject.mjs` 里加 `androidx.health.connect:connect-client` 依赖和权限
-- ⬜ 装好后在系统里授权 Health Connect 读取权限
-- ⬜ 读到的数据走 `/api/device` 上报，同时在聊天提示词里出现
-
-> 为什么先不写：华为这版到底支不支持 Health Connect 还不知道。
-> 不支持的话这套代码白写，改成下面的方案 B。
-
-### 方案 B：自动打开华为健康 + 截屏（Health Connect 不通时用；网页版已跑通手动流程）
-
-代价很大，稳定性差，只有在 A 失败后才做：
-
-- ⬜ 无障碍服务：自动打开华为运动健康、翻到「健康」页
-- ⬜ MediaProjection：截图（需要你每次授权，或常驻前台服务）
-- ⬜ 截图走 `/api/watch` 的视觉通道解析成数字，再写回设备状态
-- ⬜ 处理界面改版：选择器要能容忍 UI 变化
-
-风险：
-- 系统会常驻提示「此应用可查看你的屏幕内容」
-- 华为/小米的省电策略会杀后台，可能每天都要重开
-- 华为健康每次更新都可能让自动化失效
-
-### 权限清单（AndroidManifest）
-
-```
-android.permission.health.READ_STEPS
-android.permission.health.READ_SLEEP
-android.permission.health.READ_HEART_RATE
-android.permission.health.READ_RESTING_HEART_RATE
+```powershell
+cd bunny-home-web
+git push
 ```
 
-## 3. 通知
+**2. 打开 GitHub**
 
-- ⬜ 确认 APK 里 Web Push 仍可用（Capacitor 的 WebView 对 push 支持有限）
-  - 如果不行：改用 FCM 原生推送，需要 Firebase 项目 + google-services.json
-- ⬜ 验证锁屏上能看到通知正文
+```
+仓库 → Actions → Build Android APK → 最近一次运行
+```
 
-## 4. 分发
+**3. 等 5–10 分钟**
 
-- ⬜ debug APK 自用没问题；要给第二个人装，建议生成 release 签名版
-- ⬜ 包名：`app.bunnyhome.companion`（改了就再也换不回来，想好）
+第一次要下载 Gradle 和 Android SDK，最久；之后有缓存会快很多。
 
----
+**4. 下载**
 
-## 目前不做的
+页面底部 **Artifacts → Home-debug-apk**，解压得到 `app-debug.apk`。
 
-- **远程锁屏**：误判/断网可能把你自己锁在外面，失败代价太高
-- **无障碍截屏**：间谍软件级权限，且和已有的「屏幕共享」重复
-- **iOS**：需要 Mac + 开发者账号，暂不考虑
+**5. 装到手机**
+
+传到手机 → 点开 → 允许「安装未知来源应用」→ 装完桌面出现 **Home**。
+
+## 装好之后必做
+
+设置 → 应用 → 特殊权限 → **使用情况访问** → 允许 Home。
+
+这一个权限解锁三样东西：
+
+1. 正在用哪个 App
+2. 屏幕时间
+3. Health Connect 的数据
+
+## 打包前要清数据
+
+```powershell
+cd bunny-home-api
+node scripts/reset-data.mjs          # 演练，先看要删多少
+node scripts/reset-data.mjs --yes    # 真删
+```
+
+**会删**：对话、消息、记忆、手帐、纸条、约定、书、游戏、打卡、睡眠、喝水、三餐、朋友圈、收藏、解读、学习、钱包、聊天图片、书文件。
+
+**会保留**：人格提示词（chat_params）、模型选择、界面设置、头像、推送密钥、背景图。
+
+所以清完之后，**他还是那个他，只是没有聊天记录**。
+
+## 已知限制
+
+- **只做 Android**。iOS 要 Mac + Xcode，这里做不了。
+- 通知走 Web Push，装好后第一次打开要允许通知权限。
+- 页面是从 APK 里本地加载的，**改了代码要重新出包**——不像网页版刷新就行。
+- 视频通话的摄像头、语音输入需要系统授权，第一次会弹权限框。
