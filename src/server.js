@@ -24,7 +24,7 @@ import { cmd as pondCmd, newPond, pondInfo } from './game/pond.js';
 import { readJson as readJsonFile } from './game/read-json.js';
 import { exportAll, importAll } from './backup.js';
 import { NO_FABRICATION } from './truth.js';
-import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock } from './wallet.js';
+import { load as loadWallet, save as saveWallet, transfer, addWish, payWish, rejectWish, walletPromptBlock, ideate } from './wallet.js';
 import { knowledgeBlock, checkIn, ritualsState, fetchTopic, sleepList, upsertSleep, sleepFromRituals } from './knowledge.js';
 import { listBooks, importBook, loadBook, getChapter, saveProgress, removeBook, booksPromptBlock, getMarks, addAnnotation, autoAnnotate, maybeReplyAnnotation, removeAnnotation, addBookmark, removeBookmark } from './books.js';
 import { load as loadDiary, save as saveDiary, addEntry, addComment, addNote, notesView, toggleLike, monthView, diaryPromptBlock, autowrite as diaryAutowrite, maybeReadAndComment, maybeReplyNotes } from './diary.js';
@@ -1348,7 +1348,8 @@ app.post('/api/chat', async (req, res) => {
           name: parts[0],
           price: parts[1],
           url: 'https://s.taobao.com/search?q=' + encodeURIComponent(parts[2] || parts[0]),
-          reason: parts[3] || ''
+          reason: parts[3] || '',
+          forWho: String(parts[4] || '').includes('我们') ? 'us' : 'you'
         });
         await saveWallet(w);
       } catch {
@@ -2984,6 +2985,20 @@ app.post('/api/wallet/wish', async (req, res) => {
     addWish(w, req.body || {});
     await saveWallet(w);
     res.json({ balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/wallet/ideate', async (req, res) => {
+  try {
+    const w = await loadWallet();
+    const facts = (await supabase.from('app_settings').select('value').eq('key', 'facts').maybeSingle()).data?.value;
+    const context = Array.isArray(facts) ? facts.map((f) => f.text || f).slice(0, 8).join('；') : '';
+    const wish = await ideate(w, callModel, context);
+    if (!wish) return res.status(400).json({ error: '他这次没想出来，再试一次' });
+    await saveWallet(w);
+    res.json({ wish, balance: w.balance, ledger: w.ledger.slice(0, 30), wishes: w.wishes.slice(0, 30) });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
