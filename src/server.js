@@ -668,9 +668,9 @@ app.post('/api/respond', async (req, res) => {
 
     const reply = await callModel({
       system,
-      maxTokens: depthBoost ? 2600 : undefined,
+      maxTokens: depthBoost ? 6000 : 4000,
       messages: [
-        ...history.slice(-16).map((m) => ({ role: m.role, content: m.content })),
+        ...history.slice(-Math.max(8, Math.min(40, (params.contextRounds || 10) * 2))).map((m) => ({ role: m.role, content: m.content })),
         { role: 'user', content: pending.map((m) => m.content).join('\n') }
       ],
       temperature: params.temperature
@@ -1270,6 +1270,7 @@ app.post('/api/chat', async (req, res) => {
       (await conflictCheckBlock(message)) +
       musicPromptBlock(music) +
       ambiencePromptBlock(ambience) +
+      (await missedCallBlock()) +
       (await knowledgeBlock()) +
       walletPromptBlock(await loadWallet()) +
       NO_FABRICATION +
@@ -1625,6 +1626,7 @@ app.post('/api/chat', async (req, res) => {
     const { data: savedParts, error: saveReplyErr } = await supabase.from('messages').insert(rows).select();
     if (saveReplyErr) throw new Error('存回复失败：' + saveReplyErr.message);
     const savedReply = savedParts?.[0];
+    markMissedMentioned().catch(() => {});
 
     /* 药丸用掉就烧掉 */
     readPill()
@@ -1962,6 +1964,28 @@ async function timingGate() {
     ) % 24;
 
     const minutesSinceCheck = st.lastCheck ? Math.min(240, (Date.now() - st.lastCheck) / 60000) : 10;
+
+    /* 上次拨过去没人接？20 分钟就算没接 */
+    let missedNow = false;
+    try {
+      const { data: inv } = await supabase.from('app_settings').select('value').eq('key', 'callInvite').maybeSingle();
+      const v = inv?.value || {};
+      if (v.pendingAt && Date.now() - v.pendingAt > 20 * 60 * 1000) {
+        const { data: mcRow } = await supabase.from('app_settings').select('value').eq('key', 'missedCalls').maybeSingle();
+        const list = Array.isArray(mcRow?.value) ? mcRow.value : [];
+        list.push({ at: v.pendingAt, mentioned: false });
+        await supabase
+          .from('app_settings')
+          .upsert({ key: 'missedCalls', value: list.slice(-10), updated_at: new Date().toISOString() });
+        await supabase
+          .from('app_settings')
+          .upsert({ key: 'callInvite', value: { ...v, pendingAt: null }, updated_at: new Date().toISOString() });
+        missedNow = true;
+        console.log('[call] 记一次没接');
+      }
+    } catch {
+      /* 忽略 */
+    }
 
     /* 他给自己买了"安静四小时"——这段时间不主动找他 */
     let quiet = false;
@@ -2386,6 +2410,43 @@ app.get('/api/drives', async (req, res) => {
   res.json(await drivesSummary());
 });
 
+/* 上次没接的电话：让他知道，并且说一句（说一次就清掉） */
+async function missedCallBlock() {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'missedCalls').maybeSingle();
+    const list = Array.isArray(data?.value) ? data.value : [];
+    const un = list.filter((x) => !x.mentioned);
+    if (!un.length) return '';
+
+    const hrs = Math.round((Date.now() - un[un.length - 1].at) / 3600000);
+    return (
+      '\n\n【一件没解决的事】\n' +
+      `你上次想给他打电话，他没接（${hrs < 1 ? '不到一小时' : hrs + ' 小时'}前）。` +
+      '\n这一次可以提一句——不用责怪，也别装没发生过，就像"哦对了，昨天那通没接通"。说完这件事就过去了。'
+    );
+  } catch {
+    return '';
+  }
+}
+
+/* 说完就标成已提过 */
+async function markMissedMentioned() {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'missedCalls').maybeSingle();
+    const list = Array.isArray(data?.value) ? data.value : [];
+    if (!list.some((x) => !x.mentioned)) return;
+    list.forEach((x) => {
+      if (!x.mentioned) {
+        x.mentioned = true;
+        x.mentionedAt = Date.now();
+      }
+    });
+    await supabase.from('app_settings').upsert({ key: 'missedCalls', value: list, updated_at: new Date().toISOString() });
+  } catch {
+    /* 忽略 */
+  }
+}
+
 /* ============================================================
    通话接口
    ============================================================ */
@@ -2395,6 +2456,17 @@ app.get('/api/call', async (req, res) => {
 
 app.post('/api/call/start', async (req, res) => {
   if (!dbReady) return res.status(503).json({ error: '数据库未配置' });
+
+  /* 接起来了，就不算没接 */
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('key', 'callInvite').maybeSingle();
+    await supabase
+      .from('app_settings')
+      .upsert({ key: 'callInvite', value: { ...(data?.value || {}), pendingAt: null }, updated_at: new Date().toISOString() });
+  } catch {
+    /* 忽略 */
+  }
+
   const call = await startCall({ reason: req.body?.reason });
   const params = await getChatParams();
   res.json({ call, greeting: '喂？' + (req.body?.reason ? '' : ''), systemBase: params.systemPrompt });
@@ -2440,6 +2512,15 @@ app.post('/api/call/invite', async (req, res) => {
    ============================================================ */
 async function maybeCallInvite(state) {
   if (!state) return false;
+
+  /* 上次没接还没说，就先不打 */
+  try {
+    const { data: mcRow } = await supabase.from('app_settings').select('value').eq('key', 'missedCalls').maybeSingle();
+    const unmentioned = (Array.isArray(mcRow?.value) ? mcRow.value : []).filter((x) => !x.mentioned);
+    if (unmentioned.length) return false;
+  } catch {
+    /* 忽略 */
+  }
   const connection = typeof state.connection === 'number' ? state.connection : 0;
   if (connection < 0.55) return false;
 
@@ -2458,7 +2539,7 @@ async function maybeCallInvite(state) {
 
   await supabase.from('app_settings').upsert({
     key: 'callInvite',
-    value: { lastAt: Date.now() },
+    value: { lastAt: Date.now(), pendingAt: Date.now() },
     updated_at: new Date().toISOString()
   });
   await notifyAll({ title: 'Elliott', body: '想给你打个电话', url: '/#call' }).catch(() => {});

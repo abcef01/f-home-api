@@ -70,7 +70,7 @@ export async function callModel({
   target = 'chat',
   model: modelOverride = '',
   temperature = 0.8,
-  maxTokens = 2000
+  maxTokens = 3000
 }) {
   const conf = providerConfig(target);
   const { base, key } = conf;
@@ -172,7 +172,7 @@ export async function* streamChat({
   target = 'chat',
   model: modelOverride = '',
   temperature = 0.8,
-  maxTokens = 2000
+  maxTokens = 3000
 }) {
   const conf = providerConfig(target);
   const { base, key } = conf;
