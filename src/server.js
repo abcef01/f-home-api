@@ -58,6 +58,8 @@ app.use(
       if (ALLOWED.includes('*') || ALLOWED.includes(origin)) return cb(null, true);
       /* Vercel 的预览域名也放行 */
       if (/^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) return cb(null, true);
+      /* APK 里 WebView 的来源：https://localhost 或 capacitor://localhost */
+      if (/^(https?|capacitor):\/\/localhost(:\d+)?$/.test(origin)) return cb(null, true);
       return cb(new Error('CORS 不允许的来源：' + origin));
     },
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
