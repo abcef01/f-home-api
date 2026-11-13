@@ -65,8 +65,16 @@ export async function hisStatus(drives, activity = '') {
       moodKey = key;
     }
   }
+  /* 连接感是最容易积累的，权重给高一点 */
+  const conn = Number(scores.connection || 0);
+  if (conn > 0.3 && conn >= best) {
+    mood = conn > 0.55 ? '很想你' : '在惦记你';
+    moodKey = 'connection';
+    best = conn;
+  }
+
   /* 全都很低才算"没什么起伏" */
-  if (best < 0.22) {
+  if (best < 0.12) {
     mood = '没什么起伏';
     moodKey = 'calm';
   }
