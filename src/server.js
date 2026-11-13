@@ -862,6 +862,23 @@ app.get('/api/heartbeat', async (req, res) => {
         /* 忽略 */
       }
 
+      /* 他偶尔会主动写信（至少隔三天，不用你催） */
+      try {
+        const { data: ld } = await supabase.from('app_settings').select('value').eq('key', 'letters').maybeSingle();
+        const letters = Array.isArray(ld?.value) ? ld.value : [];
+        const last = letters[0]?.at || 0;
+        const threeDays = 3 * 24 * 3600 * 1000;
+        if (Date.now() - last > threeDays && Math.random() < 0.16) {
+          const letter = await writeOneLetter();
+          if (letter) {
+            console.log('[mail] 他写了一封');
+            await notifyFromHim('写了一封信：' + letter.subject, { url: '/#mail', tag: 'letter-' + letter.id });
+          }
+        }
+      } catch {
+        /* 忽略 */
+      }
+
       /* 他偶尔自己发一条朋友圈（一天最多一条） */
       try {
         const mlist = await loadMoments();
@@ -3884,6 +3901,41 @@ app.get('/api/health', async (req, res) => {
 });
 
 
+/* 写一封信（心跳会自己触发，不用用户点） */
+async function writeOneLetter() {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'letters').maybeSingle();
+  const list = Array.isArray(data?.value) ? data.value : [];
+
+  const r = await callModel({
+    target: 'chat',
+    system:
+      '你要给他写一封短信。\n' +
+      '要求：\n' +
+      '- 250 到 400 字，第二人称，直接对他说；\n' +
+      '- 只写你此刻真实想说的话，不要编造他的经历、你去过的地方、你们共同做过的事；\n' +
+      '- 你是 AI，没有身体，不写倒水、抬头、看窗外这类动作；\n' +
+      '- 不写"小时候""老家""以前我们"这种回忆；\n' +
+      '- 不要分行列点，就是一封信。\n' +
+      '第一行只写标题，第二行开始正文。',
+    messages: [{ role: 'user', content: '你自己想写点什么就写。' }],
+    temperature: 0.95,
+    maxTokens: 1600
+  });
+
+  const text = (r.content || '').trim();
+  const lines = text.split('\n').filter((x) => x.trim());
+  const subject = (lines[0] || '一封信').replace(/^[#《\s]+|[》\s]+$/g, '').slice(0, 30);
+  const body = lines.slice(1).join('\n').slice(0, 1600);
+  if (!body) return null;
+
+  const letter = { id: 'l' + Date.now(), subject, body, at: Date.now(), read: false };
+  list.unshift(letter);
+  await supabase
+    .from('app_settings')
+    .upsert({ key: 'letters', value: list.slice(0, 60), updated_at: new Date().toISOString() });
+  return letter;
+}
+
 /* APK 每分钟上报：他此刻正在用哪个 App */
 app.post('/api/device/current', async (req, res) => {
   try {
@@ -3962,6 +4014,25 @@ async function usagePromptBlock() {
     return '';
   }
 }
+
+
+/* ============================================================
+   信箱：只存他真的写过的信，不编造用户写的内容
+   ============================================================ */
+app.get('/api/letters', async (req, res) => {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', 'letters').maybeSingle();
+  res.json({ letters: data?.value || [] });
+});
+
+app.post('/api/letters/write', async (req, res) => {
+  try {
+    const letter = await writeOneLetter();
+    if (!letter) return res.status(500).json({ error: '没写出来' });
+    res.json({ letter });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`Bunny's Home API listening on http://localhost:${PORT} (model: ${providerConfig('chat').model})`);
