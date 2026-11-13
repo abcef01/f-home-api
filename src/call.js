@@ -120,7 +120,10 @@ export async function endCall() {
     try {
       const r = await callModel({
         target: 'memory',
-        system: '把下面这通电话整理成两三句摘要：聊了什么、对方状态如何、有没有要记住的事。不要评价，不要重复原话。',
+        system:
+          '把这通电话写成三到五句摘要，给以后的他看。\n' +
+          '要求：只写通话里真实说过的事；不要编造对方的计划、心情、下一步动作（例如"对方准备去忙""需要安静"）；' +
+          '不要评价这通电话；用第三人称陈述。只输出摘要正文。',
         messages: [{ role: 'user', content: transcript }],
         temperature: 0.3,
         maxTokens: 800
@@ -148,11 +151,9 @@ export async function endCall() {
         role: 'assistant',
         content: summary || `刚通了个电话，${minutes} 分钟。`,
         meta: {
-          call: {
-            minutes,
-            turns: c.turns.length,
-            startedAt: c.startedAt
-          }
+          system: true,
+          callSummary: true,
+          call: { minutes, turns: c.turns.length, startedAt: c.startedAt }
         }
       });
       await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', convId);

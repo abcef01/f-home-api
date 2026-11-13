@@ -65,9 +65,8 @@ export async function hisStatus(drives, activity = '') {
   }
   if (!mood) mood = '没什么起伏';
 
-  const doing = activity || s.ta?.doing || '在这待着';
-
-  const status = { doing, mood, at: Date.now() };
+  /* 不再记录"正在做什么"——他没有身体，也不该天天看雨 */
+  const status = { mood, at: Date.now() };
   s.ta = status;
   await writeKey(KEY, s);
   return status;
@@ -97,8 +96,8 @@ export async function statusPromptBlock(drives) {
   } else {
     lines.push('- 他没设状态。');
   }
-  if (his) {
-    lines.push(`- 你自己现在：${his.doing || '在这待着'}${his.mood ? `（${his.mood}）` : ''}`);
+  if (his && his.mood) {
+    lines.push(`- 你此刻的情绪：${his.mood}。`);
   }
   if (!lines.length) return '';
   return `\n\n【此刻】\n${lines.join('\n')}\n可以自然带到，但别每次都报一遍。`;
