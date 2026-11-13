@@ -702,8 +702,13 @@ app.post('/api/respond', async (req, res) => {
       role: 'assistant',
       content: t,
       model: reply.model,
-      tokens: i === 0 ? reply.tokens : 0,
-      meta: { batched: pending.length, ...(parts.length > 1 ? { part: i + 1, of: parts.length } : {}) }
+      tokens: reply.tokens || 0,
+      meta: {
+        batched: pending.length,
+        cacheHit: reply.cacheHit,
+        promptTokens: reply.promptTokens,
+        ...(parts.length > 1 ? { part: i + 1, of: parts.length } : {})
+      }
     }));
     const { data: savedParts2 } = await supabase.from('messages').insert(rows2).select();
     const saved = savedParts2?.[0];
@@ -1724,10 +1729,10 @@ app.post('/api/chat', async (req, res) => {
       role: 'assistant',
       content: t,
       model: reply.model,
-      tokens: i === 0 ? reply.tokens : 0,
+      tokens: reply.tokens || 0,
       meta: {
         ...(i === 0 ? reply.meta || {} : {}),
-        ...(i === 0 ? { usage: u, cacheHit, promptTokens } : {}),
+        cacheHit, promptTokens,
         ...(i === 0 && parsed.sticker ? { sticker: parsed.sticker.url } : {}),
         ...(i === 0 && withWatch.requested ? { watchRequest: true } : {}),
 
