@@ -3744,7 +3744,17 @@ app.delete('/api/favorites/:id', async (req, res) => {
    状态
    ============================================================ */
 app.get('/api/status', async (req, res) => {
-  const s2 = (await supabase.from('app_settings').select('value').eq('key', 'status').maybeSingle()).data?.value || {};
+  let s2 = (await supabase.from('app_settings').select('value').eq('key', 'status').maybeSingle()).data?.value || {};
+
+  /* 顺手把他的情绪刷一遍：首页和聊天读到的就是同一个值 */
+  try {
+    const ds = await drivesSummary().catch(() => ({}));
+    await hisStatus(ds?.scores || ds || {});
+    s2 = (await supabase.from('app_settings').select('value').eq('key', 'status').maybeSingle()).data?.value || s2;
+  } catch {
+    /* 刷不动就用旧的 */
+  }
+
   res.json({ me: s2.me || null, ta: s2.ta || null });
 });
 
