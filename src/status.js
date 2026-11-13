@@ -55,18 +55,24 @@ export async function hisStatus(drives, activity = '') {
   const scores = drives || {};
 
   let mood = '';
+  let moodKey = '';
   let best = 0;
-  for (const [th, key, word] of MOODS) {
+  for (const [, key, word] of MOODS) {
     const v = Number(scores[key] || 0);
-    if (v >= th && v > best) {
+    if (v > best) {
       best = v;
       mood = word;
+      moodKey = key;
     }
   }
-  if (!mood) mood = '没什么起伏';
+  /* 全都很低才算"没什么起伏" */
+  if (best < 0.22) {
+    mood = '没什么起伏';
+    moodKey = 'calm';
+  }
 
   /* 不再记录"正在做什么"——他没有身体，也不该天天看雨 */
-  const status = { mood, at: Date.now() };
+  const status = { mood, moodKey, at: Date.now() };
   s.ta = status;
   await writeKey(KEY, s);
   return status;
