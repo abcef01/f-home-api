@@ -1381,14 +1381,22 @@ app.post('/api/chat', async (req, res) => {
     if (pillText) await clearPill();
 
     const system =
+      /* ---- 静态部分：每次请求都一样，这部分才能命中缓存 ---- */
       base +
-      stickerPromptBlock(stickerList) +
-      watchRule +
       callRule +
+      watchRule +
       questRule +
+      stickerPromptBlock(stickerList) +
+      NO_FABRICATION +
+      '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
+      WHERE_RULE +
+      COT_FORMAT +
+      TAG_MENU +
+      /* ---- 下面的内容每次都可能变，放在最后，不影响前面的缓存 ---- */
+      (await factsPromptBlock()) +
       (await statePromptBlock()) +
       (await devicePromptBlock()) +
-      (await factsPromptBlock()) +
+      (await knowledgeBlock()) +
       (await recallBlock(message, convId)) +
       (await memory3Block(message)) +
       pillText +
@@ -1397,7 +1405,9 @@ app.post('/api/chat', async (req, res) => {
       singPromptBlock(singMeta) +
       ambiencePromptBlock(ambience) +
       (await missedCallBlock()) +
-      (await knowledgeBlock()) +
+      (await questsPromptBlock()) +
+      (await booksPromptBlock()) +
+      (await diaryPromptBlock()) +
       '\n\n【喝水】\n' + waterPromptLine(await loadWater()) +
       '\n【三餐】\n' + mealsPromptLine(await loadMeals()) +
       '\n【朋友圈】\n' + momentsPromptLine(await loadMoments()) +
@@ -1407,19 +1417,12 @@ app.post('/api/chat', async (req, res) => {
       (await nowAppPromptBlock()) +
       (await usagePromptBlock()) +
       (await statusPromptBlock(await drivesSummary().catch(() => ({})), )) +
-      walletPromptBlock(await loadWallet()) +
-      NO_FABRICATION +
-      '\n\n【一条硬规矩】引用对方说过的话，必须是上面记录里真有的原话。不确定就别引用，也不要编一句"你上次不是说过…"。' +
-      (await questsPromptBlock()) +
-      (await booksPromptBlock()) +
-      (await diaryPromptBlock()) +
-      (await timePromptBlock()) +
-      (await weatherPromptBlock()) +
-      (await placePromptBlock()) +
-      WHERE_RULE +
-      COT_FORMAT +
       (await drivesPromptBlock()) +
-      TAG_MENU;
+      walletPromptBlock(await loadWallet()) +
+      /* ---- 最底下的时间和天气：一定会变，放最后 ---- */
+      (await placePromptBlock()) +
+      (await weatherPromptBlock()) +
+      (await timePromptBlock());
 
     /* 5. 调模型（优先用本次请求指定的，其次用设置里的） */
     const conf = req.body.model
